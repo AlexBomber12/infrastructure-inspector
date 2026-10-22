@@ -158,6 +158,36 @@ class InspectorTests(unittest.TestCase):
                         self.assertTrue(result["stderr_truncated"])
                         self.assertEqual(result["output"], "complete")
 
+    def test_decoded_output_respects_utf8_byte_limit(self):
+        limit = CHECKS["system.os"].max_output_bytes
+        cases = (
+            (b"\xff" * limit, "\ufffd" * (limit // 3), "incomplete", True),
+            (b"a" * (limit - 1) + b"\xe2", "a" * (limit - 1), "incomplete", True),
+            (b"a" * (limit - 3) + "€".encode(), "a" * (limit - 3) + "€", "success", False),
+            (b"a" * limit, "a" * limit, "success", False),
+        )
+        with patch.object(server, "SSH_TARGET", "host"):
+            for raw, expected, status, truncated in cases:
+                with self.subTest(raw_suffix=raw[-4:]), patch.object(
+                    server, "run_bounded", return_value=Captured(0, raw, b"", False)
+                ):
+                    result = server.inspect("system.os")
+                    self.assertEqual(result["output"], expected)
+                    self.assertLessEqual(len(result["output"].encode("utf-8")), limit)
+                    self.assertEqual(result["status"], status)
+                    self.assertIs(result["truncated"], truncated)
+                    self.assertEqual(result["exit_code"], 0)
+                    self.assertEqual(
+                        result["error"], "Diagnostic output was truncated" if truncated else None
+                    )
+            with patch.object(server, "run_bounded", return_value=Captured(
+                7, b"\xff" * limit, b"diagnostic failed", False
+            )):
+                result = server.inspect("system.os")
+                self.assertEqual(result["status"], "incomplete")
+                self.assertEqual(result["exit_code"], 7)
+                self.assertEqual(result["error"], "diagnostic failed")
+
     def test_empty_routes_and_devices_are_successful(self):
         with patch.object(server, "SSH_TARGET", "host"):
             for check_id, output in (
