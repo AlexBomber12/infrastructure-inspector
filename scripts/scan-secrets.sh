@@ -8,6 +8,10 @@ scan_root="$(cd -- "$scan_root" && pwd)"
 # A valid Git history with actual patch content is required. Gitleaks must never
 # report success after a missing revision or an empty scan.
 git -C "$scan_root" rev-parse --verify HEAD^{commit} >/dev/null
+if [[ "$(git -C "$scan_root" rev-parse --is-shallow-repository)" == true ]]; then
+  echo "Secret scan requires full Git history; this repository is shallow" >&2
+  exit 1
+fi
 patch_bytes="$(git -C "$scan_root" log --all --full-history -p --format= | wc -c)"
 if (( patch_bytes == 0 )); then
   echo "Secret scan refused an empty Git history" >&2
@@ -29,10 +33,28 @@ if ! git -C "$scan_root" log --all --full-history -p -U0 --format= 2>/dev/null |
   exit 1
 fi
 
-# Include staged, modified, and untracked files before they can be published.
-if ! docker run --rm --network none --read-only \
-  --mount "type=bind,src=$scan_root,dst=/repo,readonly" \
-  "$image" dir --no-banner --no-color --redact /repo >"$scan_output" 2>&1 ||
+# A staged file can differ from the working tree. Scan the index diff as well.
+staged_bytes="$(git -C "$scan_root" diff --cached --no-ext-diff --binary --no-color | wc -c)"
+if ! git -C "$scan_root" diff --cached --no-ext-diff --binary --no-color 2>/dev/null |
+  docker run --rm -i --network none --read-only \
+    "$image" stdin --no-banner --no-color --redact >"$scan_output" 2>&1 ||
+  { (( staged_bytes > 0 )) && ! grep -Eq 'scanned ~[1-9][0-9]* bytes' "$scan_output"; }; then
+  echo "Staged secret scan failed; inspect locally with restricted output" >&2
+  exit 1
+fi
+
+# Read tracked and nonignored untracked working files. Ignored deployment
+# credentials cannot be committed normally and must not break the local gate.
+if ! git -C "$scan_root" ls-files -z --cached --others --exclude-standard |
+  while IFS= read -r -d '' path; do
+    file="$scan_root/$path"
+    if [[ -f "$file" && ! -L "$file" ]]; then
+      cat -- "$file"
+      printf '\n'
+    fi
+  done |
+  docker run --rm -i --network none --read-only \
+    "$image" stdin --no-banner --no-color --redact >"$scan_output" 2>&1 ||
   ! grep -Eq 'scanned ~[1-9][0-9]* bytes' "$scan_output"; then
   echo "Current-file secret scan failed; inspect locally with restricted output" >&2
   exit 1

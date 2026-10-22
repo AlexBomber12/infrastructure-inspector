@@ -22,6 +22,19 @@ bash "$repo_root/scripts/scan-secrets.sh" "$clean_repo" >/dev/null
 git -C "$clean_repo" worktree add -q "$fixture_root/linked" HEAD
 bash "$repo_root/scripts/scan-secrets.sh" "$fixture_root/linked" >/dev/null
 
+printf 'another clean file\n' >"$clean_repo/second.txt"
+git -C "$clean_repo" add second.txt
+git -C "$clean_repo" commit -qm 'Second clean commit'
+git clone -q --depth 1 "file://$clean_repo" "$fixture_root/shallow"
+if bash "$repo_root/scripts/scan-secrets.sh" "$fixture_root/shallow" >"$fixture_root/output" 2>&1; then
+  echo 'Secret scan accepted a shallow repository' >&2
+  exit 1
+fi
+if ! grep -Fq 'shallow' "$fixture_root/output"; then
+  echo 'Shallow repository failed for an unrelated reason' >&2
+  exit 1
+fi
+
 # The detector fixture is generated in a temporary repository, never committed
 # to this public repository. Check the root commit and a later commit separately.
 fixture_value='AKIAZ7X8Y9Q2W3E4R5T6'
@@ -56,6 +69,21 @@ if grep -Fq "$fixture_value" "$fixture_root/output"; then
   exit 1
 fi
 rm "$clean_repo/pending.txt"
+
+printf 'access_key = %s\n' "$fixture_value" >"$clean_repo/staged.txt"
+git -C "$clean_repo" add staged.txt
+printf 'ordinary text\n' >"$clean_repo/staged.txt"
+if bash "$repo_root/scripts/scan-secrets.sh" "$clean_repo" >"$fixture_root/output" 2>&1; then
+  echo 'Secret scan missed an index-only secret fixture' >&2
+  exit 1
+fi
+git -C "$clean_repo" reset -q -- staged.txt
+rm "$clean_repo/staged.txt"
+
+printf 'secrets/\n' >"$clean_repo/.gitignore"
+mkdir "$clean_repo/secrets"
+printf 'access_key = %s\n' "$fixture_value" >"$clean_repo/secrets/local.txt"
+bash "$repo_root/scripts/scan-secrets.sh" "$clean_repo" >/dev/null
 
 # Reproduce a scanner that exits successfully after processing zero commits.
 # The fake executable only supplies output; the real scanner was exercised above.

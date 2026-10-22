@@ -18,6 +18,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Run local validation gate
