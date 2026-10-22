@@ -14,8 +14,11 @@ MAX_CONFIG_BYTES = 8192
 HOST_ID = re.compile(r"[a-z][a-z0-9_-]{0,31}\Z", re.ASCII)
 TARGET = re.compile(r"[a-z_][a-z0-9_-]{0,31}@[a-z0-9][a-z0-9.-]{0,252}\Z", re.ASCII)
 LEGACY_TARGET = re.compile(r"(?:[a-z_][a-z0-9_-]{0,31}@)?[a-z0-9][a-z0-9.-]{0,252}\Z", re.ASCII | re.IGNORECASE)
-IPV6_TARGET = re.compile(r"[a-z_][a-z0-9_-]{0,31}@\[([0-9a-fA-F:.]+)\]\Z", re.ASCII)
-LEGACY_IPV6_TARGET = re.compile(r"(?:[a-z_][a-z0-9_-]{0,31}@)?\[([0-9a-fA-F:.]+)\]\Z", re.ASCII | re.IGNORECASE)
+IPV6_BODY = r"[0-9a-fA-F:.]+(?:%[A-Za-z0-9_.-]{1,32})?"
+IPV6_TARGET = re.compile(rf"[a-z_][a-z0-9_-]{{0,31}}@\[({IPV6_BODY})\]\Z", re.ASCII)
+LEGACY_IPV6_TARGET = re.compile(rf"(?:[a-z_][a-z0-9_-]{{0,31}}@)?\[({IPV6_BODY})\]\Z", re.ASCII | re.IGNORECASE)
+IPV6_NATIVE = re.compile(rf"[a-z_][a-z0-9_-]{{0,31}}@({IPV6_BODY})\Z", re.ASCII)
+LEGACY_IPV6_NATIVE = re.compile(rf"(?:[a-z_][a-z0-9_-]{{0,31}}@)?({IPV6_BODY})\Z", re.ASCII | re.IGNORECASE)
 LEGACY_URI = re.compile(
     r"ssh://(?:[a-z_][a-z0-9_-]{0,31}@)?"
     r"([a-z0-9][a-z0-9.-]{0,252})(?::([0-9]{1,5}))?\Z",
@@ -54,7 +57,9 @@ def valid_target(value, *, legacy=False):
         return True
     match = (LEGACY_IPV6_TARGET if legacy else IPV6_TARGET).fullmatch(value)
     if match is None:
-        return legacy and valid_legacy_uri(value)
+        match = (LEGACY_IPV6_NATIVE if legacy else IPV6_NATIVE).fullmatch(value)
+        if match is None:
+            return legacy and valid_legacy_uri(value)
     try:
         ipaddress.IPv6Address(match.group(1))
     except ValueError:

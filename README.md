@@ -132,6 +132,7 @@ combine the two Compose files.
 The legacy `INSPECTOR_SSH_TARGET` accepts fixed `user@hostname`, bracketed
 IPv6, and OpenSSH `ssh://[user@]hostname[:port]` destinations so existing
 non-default-port deployments continue to work. URI ports must be 1–65535.
+Native unbracketed IPv6 and constrained `%interface` scope names are accepted.
 Bracketed IPv6 inside an `ssh://` URI is rejected because the deployed
 OpenSSH client does not parse that form.
 These values remain operator-set environment configuration, never MCP input.

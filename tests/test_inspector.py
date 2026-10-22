@@ -108,13 +108,16 @@ class HostRegistryTests(unittest.TestCase):
                          .select(None).target, "audit@2001:db8::10")
         self.assertEqual(legacy_registry("[2001:db8::10]", "IPv6", "key", "hosts")
                          .select(None).target, "2001:db8::10")
+        self.assertEqual(legacy_registry("audit@fe80::1%eth0", "IPv6", "key", "hosts")
+                         .select(None).target, "audit@fe80::1%eth0")
         with patch.object(server, "MULTI_REGISTRY", None), patch.object(
             server, "SSH_TARGET", "audit@[2001:db8::10]"
         ), patch.object(server, "run_bounded", return_value=Captured(0, b"ok", b"", False)) as run:
             self.assertEqual(server.inspect("system.os")["status"], "success")
             self.assertEqual(run.call_args.args[0][-2:], ["audit@2001:db8::10", "system.os"])
         for uri in ("ssh://audit@example.com:2222", "ssh://example.com",
-                    "ssh://audit@Server.Example.COM:2222", "audit@Server.Example.COM"):
+                    "ssh://audit@Server.Example.COM:2222", "audit@Server.Example.COM",
+                    "audit@2001:db8::10", "audit@fe80::1%eth0", "2001:db8::10"):
             with self.subTest(uri=uri), patch.object(server, "MULTI_REGISTRY", None), patch.object(
                 server, "SSH_TARGET", uri
             ), patch.object(server, "run_bounded", return_value=Captured(0, b"ok", b"", False)) as run:
@@ -132,6 +135,8 @@ class HostRegistryTests(unittest.TestCase):
         ).returncode, 0)
         self.data["hosts"][1]["target"] = "audit@[2001:db8::10]"
         self.assertEqual(self.load().select("b").target, "audit@2001:db8::10")
+        self.data["hosts"][1]["target"] = "audit@fe80::1%eth0"
+        self.assertEqual(self.load().select("b").target, "audit@fe80::1%eth0")
         with patch.object(server, "MULTI_REGISTRY", None), patch.object(server, "SSH_TARGET", "audit@host-a"):
             self.assertEqual(server.list_hosts(), [{"host_id": "default", "label": server.HOST_LABEL}])
         for target in ("-oProxyCommand=id", "audit@host..a", "audit@host;id",
@@ -139,7 +144,8 @@ class HostRegistryTests(unittest.TestCase):
                        "ssh://audit@host..a:22", "ssh://audit@example.com:0",
                        "ssh://audit@example.com:65536", "ssh://audit@example.com:2222/id",
                        "ssh://audit@[1234]:2222", rejected_uri,
-                       "ssh://-oProxyCommand=id@host"):
+                       "ssh://-oProxyCommand=id@host", "audit@fe80::1%eth0;id",
+                       "audit@1234:5678:9"):
             with self.assertRaises(ValueError):
                 legacy_registry(target, "Legacy", "key", "hosts")
 
