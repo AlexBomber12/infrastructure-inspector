@@ -1,185 +1,239 @@
 import asyncio
+import importlib.util
+import io
 import os
 import subprocess
 import sys
 import unittest
+from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import patch
 
 import server
+from bounded import Captured, run_bounded
+from catalog import CHECKS, LEGACY_OPERATIONS
+
+DISPATCHER_PATH = Path(__file__).resolve().parents[1] / "host" / "sg-audit-dispatch.py"
+spec = importlib.util.spec_from_file_location("dispatcher", DISPATCHER_PATH)
+dispatcher = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(dispatcher)
+
+EXPECTED_COMMANDS = {
+    "system.identity": ["/usr/bin/id"],
+    "system.uptime": ["/usr/bin/uptime"],
+    "network.listeners": ["/usr/bin/ss", "-H", "-lnt"],
+    "system.services": [
+        "/usr/bin/systemctl", "list-units", "--type=service",
+        "--state=running", "--no-pager", "--plain", "--no-legend",
+    ],
+    "system.os": ["/usr/bin/cat", "/etc/os-release"],
+    "system.kernel": ["/usr/bin/uname", "-srmo"],
+    "system.cpu": ["/usr/bin/lscpu"],
+    "system.memory": ["/usr/bin/free", "-b"],
+}
 
 
 class InspectorTests(unittest.TestCase):
-
     def test_registered_tools(self):
         tools = asyncio.run(server.mcp.list_tools())
-        names = {tool.name for tool in tools}
         self.assertEqual(
-            names,
-            {"inspector_status", "inspect_server"},
+            {tool.name for tool in tools},
+            {"inspector_status", "inspect_server", "list_checks", "inspect", "inspect_batch"},
         )
 
-    def test_operation_allowlist(self):
-        self.assertEqual(
-            set(server.OPERATIONS),
-            {"identity", "uptime", "listeners", "services"},
-        )
+    def test_catalog_complete_and_consistent(self):
+        self.assertEqual(set(CHECKS), set(EXPECTED_COMMANDS))
+        self.assertEqual(set(LEGACY_OPERATIONS.values()), {
+            "system.identity", "system.uptime", "network.listeners", "system.services",
+        })
+        entries = server.list_checks()
+        self.assertEqual({entry["check_id"] for entry in entries}, set(CHECKS))
+        for entry in entries:
+            self.assertTrue(entry["description"])
+            self.assertTrue(entry["category"])
+            self.assertIs(entry["requires_elevation"], False)
+            self.assertEqual(entry["timeout_seconds"], 15)
+            self.assertEqual(entry["max_output_bytes"], 16384)
 
-    def test_ssh_command_construction(self):
-        completed = subprocess.CompletedProcess(
-            args=[],
-            returncode=0,
-            stdout="test output\n",
-            stderr="",
-        )
-
+    def test_every_check_uses_exact_ssh_operation_and_result_schema(self):
         with (
             patch.object(server, "SSH_TARGET", "sg-audit@192.0.2.1"),
-            patch.object(server, "HOST_LABEL", "test-server"),
-            patch.object(
-                server.subprocess,
-                "run",
-                return_value=completed,
-            ) as execute,
+            patch.object(server, "HOST_LABEL", "test-host"),
+            patch.object(server, "run_bounded", return_value=Captured(0, b"ok\n", b"", False)) as run,
         ):
-            for operation in server.OPERATIONS:
-                result = server.inspect_server(operation)
+            for check_id in CHECKS:
+                with self.subTest(check_id=check_id):
+                    result = server.inspect(check_id)
+                    command = run.call_args.args[0]
+                    self.assertEqual(command[-2:], ["sg-audit@192.0.2.1", check_id])
+                    self.assertEqual(command[0], "/usr/bin/ssh")
+                    self.assertIn("StrictHostKeyChecking=yes", command)
+                    self.assertIn("BatchMode=yes", command)
+                    self.assertIn("ClearAllForwardings=yes", command)
+                    self.assertEqual(run.call_args.kwargs["timeout"], 15)
+                    self.assertEqual(run.call_args.kwargs["stdout_limit"], 16384)
+                    self.assertEqual(result["host"], "test-host")
+                    self.assertEqual(result["check_id"], check_id)
+                    self.assertEqual(result["status"], "success")
+                    self.assertEqual(result["exit_code"], 0)
+                    self.assertEqual(result["output"], "ok\n")
+                    self.assertIs(result["truncated"], False)
+                    self.assertIsNone(result["error"])
+                    self.assertTrue(result["collected_at"].endswith("+00:00"))
 
-                command = execute.call_args.args[0]
-                options = execute.call_args.kwargs
+    def test_unknown_malformed_and_injected_requests_do_not_reach_ssh(self):
+        with patch.object(server, "run_bounded") as run:
+            for value in ("", "whoami", "system.os; id", "system.cpu && reboot",
+                          "/bin/sh", "../etc/passwd", None, 1, ["system.os"]):
+                with self.subTest(value=value), self.assertRaises(ValueError):
+                    server.inspect(value)
+            for value in ("whoami", "uptime; id", "services && reboot", "/bin/sh", None):
+                with self.subTest(value=value), self.assertRaises(ValueError):
+                    server.inspect_server(value)
+            run.assert_not_called()
 
-                self.assertEqual(command[0], "/usr/bin/ssh")
-                self.assertEqual(
-                    command[-2:],
-                    ["sg-audit@192.0.2.1", operation],
-                )
-                self.assertIn("StrictHostKeyChecking=yes", command)
-                self.assertIn("BatchMode=yes", command)
-                self.assertIn("ClearAllForwardings=yes", command)
-                self.assertEqual(options["timeout"], 15)
-                self.assertNotIn("shell", options)
-
-                self.assertEqual(result["host"], "test-server")
-                self.assertEqual(result["exit_code"], 0)
-                self.assertEqual(result["operation"], operation)
-
-    def test_rejects_arbitrary_commands(self):
-        with patch.object(server.subprocess, "run") as execute:
-            for operation in (
-                "whoami",
-                "uptime; id",
-                "services && reboot",
-                "/bin/sh",
+    def test_missing_target_and_transport_failures(self):
+        with patch.object(server, "SSH_TARGET", ""), patch.object(server, "run_bounded") as run:
+            result = server.inspect("system.os")
+            self.assertEqual(result["status"], "error")
+            self.assertIsNone(result["exit_code"])
+            self.assertIn("not configured", result["error"])
+            with self.assertRaisesRegex(RuntimeError, "not configured"):
+                server.inspect_server("uptime")
+            run.assert_not_called()
+        with patch.object(server, "SSH_TARGET", "host"):
+            for failure, message in (
+                (subprocess.TimeoutExpired("ssh", 15), "timed out"),
+                (OSError("private path"), "could not start"),
             ):
-                with self.assertRaises(ValueError):
-                    server.inspect_server(operation)
+                with patch.object(server, "run_bounded", side_effect=failure):
+                    result = server.inspect("system.os")
+                    self.assertEqual(result["status"], "error")
+                    self.assertIn(message, result["error"])
+                    self.assertNotIn("private path", result["error"])
 
-            execute.assert_not_called()
+    def test_nonzero_and_truncation_are_not_success(self):
+        with patch.object(server, "SSH_TARGET", "host"):
+            cases = [
+                (Captured(255, b"", b"\x1b[31mSSH failed\x1b[0m\x00" + b"x" * 2000, False),
+                 "error", False),
+                (Captured(-9, b"x" * 16384, b"", True), "incomplete", True),
+                (Captured(125, b"x", b"ERROR: diagnostic output truncated\n", False),
+                 "incomplete", True),
+                (Captured(125, b"", b"ordinary exit 125", False), "error", False),
+            ]
+            for captured, status, truncated in cases:
+                with patch.object(server, "run_bounded", return_value=captured):
+                    result = server.inspect("system.os")
+                    self.assertEqual(result["status"], status)
+                    self.assertIs(result["truncated"], truncated)
+                    self.assertLessEqual(len(result["error"]), 1024)
+                    self.assertNotIn("\x1b", result["error"])
+                    self.assertNotIn("\x00", result["error"])
 
-    def test_rejects_missing_target(self):
+    def test_batch_validation_and_partial_failure(self):
+        with patch.object(server, "run_bounded") as run:
+            for ids in ([], ["system.os"] * 6, ["system.os", "bad"], "system.os",
+                        [None], [1], None):
+                with self.subTest(ids=ids), self.assertRaises(ValueError):
+                    server.inspect_batch(ids)
+            run.assert_not_called()
+        responses = [
+            Captured(0, b"first", b"", False),
+            Captured(1, b"", b"failed", False),
+            Captured(0, b"third", b"", False),
+        ]
         with (
-            patch.object(server, "SSH_TARGET", ""),
-            patch.object(server.subprocess, "run") as execute,
+            patch.object(server, "SSH_TARGET", "host"),
+            patch.object(server, "run_bounded", side_effect=responses) as run,
         ):
-            with self.assertRaises(RuntimeError):
+            results = server.inspect_batch(["system.os", "system.kernel", "system.cpu"])
+            self.assertEqual([r["status"] for r in results], ["success", "error", "success"])
+            self.assertEqual([r["output"] for r in results], ["first", "", "third"])
+            self.assertEqual(run.call_count, 3)
+
+    def test_legacy_compatibility(self):
+        self.assertEqual(set(server.inspector_status()["operations"]), set(LEGACY_OPERATIONS))
+        with (
+            patch.object(server, "SSH_TARGET", "host"),
+            patch.object(server, "run_bounded", return_value=Captured(0, b"ok", b"", False)) as run,
+        ):
+            for operation in LEGACY_OPERATIONS:
+                result = server.inspect_server(operation)
+                self.assertEqual(run.call_args.args[0][-1], operation)
+                self.assertEqual(result, {
+                    "host": server.HOST_LABEL, "operation": operation,
+                    "exit_code": 0, "output": "ok",
+                })
+        with (
+            patch.object(server, "SSH_TARGET", "host"),
+            patch.object(server, "run_bounded", return_value=Captured(1, b"", b"failed", False)),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "failed"):
                 server.inspect_server("uptime")
 
-            execute.assert_not_called()
-
-    def test_ssh_failure(self):
-        completed = subprocess.CompletedProcess(
-            args=[],
-            returncode=255,
-            stdout="",
-            stderr="SSH connection failed",
-        )
-
-        with (
-            patch.object(server, "SSH_TARGET", "sg-audit@192.0.2.1"),
-            patch.object(
-                server.subprocess,
-                "run",
-                return_value=completed,
-            ),
-        ):
-            with self.assertRaises(RuntimeError):
-                server.inspect_server("uptime")
-
-    def test_ssh_timeout(self):
-        with (
-            patch.object(server, "SSH_TARGET", "sg-audit@192.0.2.1"),
-            patch.object(
-                server.subprocess,
-                "run",
-                side_effect=subprocess.TimeoutExpired("ssh", 15),
-            ),
-        ):
-            with self.assertRaisesRegex(RuntimeError, "timed out"):
-                server.inspect_server("uptime")
-
-    def test_response_limit(self):
-        completed = subprocess.CompletedProcess(
-            args=[],
-            returncode=0,
-            stdout="x" * 20000,
-            stderr="",
-        )
-
-        with (
-            patch.object(server, "SSH_TARGET", "sg-audit@192.0.2.1"),
-            patch.object(
-                server.subprocess,
-                "run",
-                return_value=completed,
-            ),
-        ):
-            result = server.inspect_server("uptime")
-            self.assertEqual(len(result["output"]), 16384)
+    def test_bounded_local_capture_and_timeout(self):
+        command = [sys.executable, "-c", "import sys;sys.stdout.write('x'*50000)"]
+        result = run_bounded(command, timeout=2, stdout_limit=1024,
+                             stderr_limit=128, env=dict(os.environ))
+        self.assertTrue(result.truncated)
+        self.assertEqual(len(result.stdout), 1024)
+        with self.assertRaises(subprocess.TimeoutExpired):
+            run_bounded([sys.executable, "-c", "import time;time.sleep(2)"],
+                        timeout=0.1, stdout_limit=1024, stderr_limit=128,
+                        env=dict(os.environ))
 
 
 class DispatcherTests(unittest.TestCase):
+    def test_complete_independent_fixed_allowlist(self):
+        expected = dict(EXPECTED_COMMANDS)
+        expected.update({legacy: EXPECTED_COMMANDS[check_id]
+                         for legacy, check_id in LEGACY_OPERATIONS.items()})
+        self.assertEqual(dispatcher.COMMANDS, expected)
+        self.assertEqual(dispatcher.OUTPUT_LIMIT, 16384)
+        self.assertEqual(dispatcher.TIMEOUT, 10)
 
-    def test_dispatcher_rejects_shell_injection(self):
-        dispatcher = (
-            Path(__file__).resolve().parents[1]
-            / "host"
-            / "sg-audit-dispatch.py"
-        )
+    def test_every_operation_dispatches_exact_argv(self):
+        for operation, argv in dispatcher.COMMANDS.items():
+            with self.subTest(operation=operation):
+                with patch.dict(os.environ, {"SSH_ORIGINAL_COMMAND": operation}):
+                    with patch.object(dispatcher, "execute", return_value=(0, b"", b"", False)) as run:
+                        self.assertEqual(dispatcher.main(), 0)
+                        run.assert_called_once_with(argv)
 
-        env = dict(os.environ)
-        env["SSH_ORIGINAL_COMMAND"] = "uptime; id"
+    def test_dispatcher_rejects_unknown_and_injection_independently(self):
+        for operation in ("", "system.os /etc/shadow", "uptime; id", "system.cpu && id",
+                          "/bin/sh", "system.os\nidentity", "../etc/passwd"):
+            with self.subTest(operation=operation):
+                env = dict(os.environ, SSH_ORIGINAL_COMMAND=operation)
+                result = subprocess.run(
+                    [sys.executable, "-I", str(DISPATCHER_PATH)],
+                    env=env, capture_output=True, timeout=5,
+                )
+                self.assertEqual(result.returncode, 126)
+                self.assertIn(b"DENIED", result.stderr)
 
-        result = subprocess.run(
-            [sys.executable, "-I", str(dispatcher)],
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
+    def test_dispatcher_real_identity_and_os(self):
+        for operation, expected in (("identity", b"uid="), ("system.os", b"ID=")):
+            result = subprocess.run(
+                [sys.executable, "-I", str(DISPATCHER_PATH)],
+                env=dict(os.environ, SSH_ORIGINAL_COMMAND=operation),
+                capture_output=True, timeout=5,
+            )
+            self.assertEqual(result.returncode, 0)
+            self.assertIn(expected, result.stdout)
 
-        self.assertEqual(result.returncode, 126)
-        self.assertIn("DENIED", result.stderr)
-
-    def test_dispatcher_allows_identity(self):
-        dispatcher = (
-            Path(__file__).resolve().parents[1]
-            / "host"
-            / "sg-audit-dispatch.py"
-        )
-
-        env = dict(os.environ)
-        env["SSH_ORIGINAL_COMMAND"] = "identity"
-
-        result = subprocess.run(
-            [sys.executable, "-I", str(dispatcher)],
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-
-        self.assertEqual(result.returncode, 0)
-        self.assertIn("uid=", result.stdout)
+    def test_dispatcher_truncates_and_reports_incomplete(self):
+        result = dispatcher.execute([sys.executable, "-c",
+                                     "import sys;sys.stdout.write('x'*50000)"])
+        self.assertTrue(result[3])
+        self.assertEqual(len(result[1]), dispatcher.OUTPUT_LIMIT)
+        with patch.dict(os.environ, {"SSH_ORIGINAL_COMMAND": "system.os"}):
+            with patch.object(dispatcher, "execute", return_value=result):
+                with patch.object(dispatcher.sys, "stdout", SimpleNamespace(buffer=io.BytesIO())):
+                    with patch.object(dispatcher.sys, "stderr", SimpleNamespace(buffer=io.BytesIO())) as stderr:
+                        self.assertEqual(dispatcher.main(), 125)
+                        self.assertIn(b"output truncated", stderr.buffer.getvalue())
 
 
 if __name__ == "__main__":

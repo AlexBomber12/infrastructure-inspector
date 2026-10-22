@@ -12,7 +12,7 @@ RUN apt-get update \
 COPY requirements.txt .
 RUN python -m pip install --no-cache-dir -r requirements.txt     && python -m pip check
 
-COPY server.py .
+COPY server.py catalog.py bounded.py ./
 
 RUN groupadd --gid 65533 inspector && useradd --uid 65533 --gid inspector --home-dir /home/inspector --create-home --shell /usr/sbin/nologin inspector
 
