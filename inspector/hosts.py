@@ -13,13 +13,13 @@ MAX_HOSTS = 8
 MAX_CONFIG_BYTES = 8192
 HOST_ID = re.compile(r"[a-z][a-z0-9_-]{0,31}\Z", re.ASCII)
 TARGET = re.compile(r"[a-z_][a-z0-9_-]{0,31}@[a-z0-9][a-z0-9.-]{0,252}\Z", re.ASCII)
-LEGACY_TARGET = re.compile(r"(?:[a-z_][a-z0-9_-]{0,31}@)?[a-z0-9][a-z0-9.-]{0,252}\Z", re.ASCII)
+LEGACY_TARGET = re.compile(r"(?:[a-z_][a-z0-9_-]{0,31}@)?[a-z0-9][a-z0-9.-]{0,252}\Z", re.ASCII | re.IGNORECASE)
 IPV6_TARGET = re.compile(r"[a-z_][a-z0-9_-]{0,31}@\[([0-9a-fA-F:.]+)\]\Z", re.ASCII)
-LEGACY_IPV6_TARGET = re.compile(r"(?:[a-z_][a-z0-9_-]{0,31}@)?\[([0-9a-fA-F:.]+)\]\Z", re.ASCII)
+LEGACY_IPV6_TARGET = re.compile(r"(?:[a-z_][a-z0-9_-]{0,31}@)?\[([0-9a-fA-F:.]+)\]\Z", re.ASCII | re.IGNORECASE)
 LEGACY_URI = re.compile(
     r"ssh://(?:[a-z_][a-z0-9_-]{0,31}@)?"
-    r"(?:([a-z0-9][a-z0-9.-]{0,252})|\[([0-9a-fA-F:.]+)\])"
-    r"(?::([0-9]{1,5}))?\Z", re.ASCII,
+    r"([a-z0-9][a-z0-9.-]{0,252})(?::([0-9]{1,5}))?\Z",
+    re.ASCII | re.IGNORECASE,
 )
 LABEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9 _.-]{0,63}\Z", re.ASCII)
 
@@ -66,14 +66,9 @@ def valid_legacy_uri(value):
     match = LEGACY_URI.fullmatch(value)
     if match is None:
         return False
-    hostname, ipv6, port = match.groups()
-    if hostname is not None and ".." in hostname:
+    hostname, port = match.groups()
+    if ".." in hostname:
         return False
-    if ipv6 is not None:
-        try:
-            ipaddress.IPv6Address(ipv6)
-        except ValueError:
-            return False
     if port is not None and not 1 <= int(port) <= 65535:
         return False
     return True
