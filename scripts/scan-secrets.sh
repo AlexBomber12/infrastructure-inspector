@@ -20,7 +20,9 @@ trap 'rm -f "$scan_output"' EXIT
 
 if docker run --rm --network none --read-only \
   --mount "type=bind,src=$scan_root,dst=/repo,readonly" \
-  "$image" git --no-banner --redact /repo >"$scan_output" 2>&1; then
+  "$image" git --no-banner --no-color --redact /repo >"$scan_output" 2>&1 && \
+  grep -Eq '[1-9][0-9]* commits scanned\.' "$scan_output" && \
+  grep -Eq 'scanned ~[1-9][0-9]* bytes' "$scan_output"; then
   echo "Secret scan passed ($patch_bytes Git patch bytes checked)"
 else
   # Gitleaks output may contain sensitive findings. Keep it out of public logs.

@@ -43,4 +43,20 @@ for secret_position in root later; do
   fi
 done
 
+# Reproduce a scanner that exits successfully after processing zero commits.
+# The fake executable only supplies output; the real scanner was exercised above.
+mkdir "$fixture_root/fake-bin"
+cat >"$fixture_root/fake-bin/docker" <<'EOF'
+#!/usr/bin/env bash
+echo '0 commits scanned.'
+echo 'scanned ~0 bytes (0)'
+exit 0
+EOF
+chmod +x "$fixture_root/fake-bin/docker"
+if PATH="$fixture_root/fake-bin:$PATH" \
+  bash "$repo_root/scripts/scan-secrets.sh" "$clean_repo" >"$fixture_root/output" 2>&1; then
+  echo 'Secret scan accepted a successful zero-commit result' >&2
+  exit 1
+fi
+
 echo 'Secret scanner fixture checks passed'
