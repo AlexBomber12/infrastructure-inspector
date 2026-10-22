@@ -136,7 +136,8 @@ synthetic example. Its exact schema is `{"default_host":"id","hosts":[...]}`;
 each host entry contains exactly `id`, `label`, and `target`. IDs use 1–32
 lowercase ASCII letters, digits, underscores or hyphens and start with a
 letter. Labels use 1–64 safe printable characters. Targets have the fixed
-`user@hostname` form, with no SSH options, port, whitespace or path syntax.
+`user@hostname` or `user@[IPv6-address]` form, with no SSH options, port,
+whitespace or path syntax.
 There must be 1–8 hosts, unique IDs, and a default ID present in the list.
 The file is capped at 8 KiB; duplicate JSON fields and unknown fields fail.
 
@@ -150,6 +151,12 @@ of the public repository. The Inspector still uses strict host-key checking,
 disables agent and forwarding, and relies on each target's independent
 ForceCommand allowlist. The server-side dispatcher must be installed and
 configured separately on every additional Linux host.
+
+The multi-host Compose file keeps `mcp-private` internal and attaches only the
+Inspector to a separate `ssh-egress` bridge so it can reach external SSH
+targets. Restrict that bridge's outbound access to approved SSH destinations
+with operator-managed firewall rules before any production rollout. The
+tunnel client is not attached to `ssh-egress`.
 
 To add a host, provision its dedicated unprivileged audit account, ForceCommand
 dispatcher, authorized client key, and verified SSH host key; add the matching

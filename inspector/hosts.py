@@ -1,6 +1,7 @@
 """Operator-owned, bounded SSH host registry."""
 
 import json
+import ipaddress
 import os
 import re
 from dataclasses import dataclass
@@ -13,6 +14,8 @@ MAX_CONFIG_BYTES = 8192
 HOST_ID = re.compile(r"[a-z][a-z0-9_-]{0,31}\Z", re.ASCII)
 TARGET = re.compile(r"[a-z_][a-z0-9_-]{0,31}@[a-z0-9][a-z0-9.-]{0,252}\Z", re.ASCII)
 LEGACY_TARGET = re.compile(r"(?:[a-z_][a-z0-9_-]{0,31}@)?[a-z0-9][a-z0-9.-]{0,252}\Z", re.ASCII)
+IPV6_TARGET = re.compile(r"[a-z_][a-z0-9_-]{0,31}@\[([0-9a-fA-F:.]+)\]\Z", re.ASCII)
+LEGACY_IPV6_TARGET = re.compile(r"(?:[a-z_][a-z0-9_-]{0,31}@)?\[([0-9a-fA-F:.]+)\]\Z", re.ASCII)
 LABEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9 _.-]{0,63}\Z", re.ASCII)
 
 
@@ -36,6 +39,22 @@ class Registry:
         if not isinstance(host_id, str) or not HOST_ID.fullmatch(host_id) or host_id not in self.hosts:
             raise ValueError("Unknown host ID")
         return self.hosts[host_id]
+
+
+def valid_target(value, *, legacy=False):
+    if not isinstance(value, str):
+        return False
+    pattern = LEGACY_TARGET if legacy else TARGET
+    if pattern.fullmatch(value) and ".." not in value:
+        return True
+    match = (LEGACY_IPV6_TARGET if legacy else IPV6_TARGET).fullmatch(value)
+    if match is None:
+        return False
+    try:
+        ipaddress.IPv6Address(match.group(1))
+    except ValueError:
+        return False
+    return True
 
 
 def _credential(path):
@@ -67,7 +86,7 @@ def load_multi_registry(config_path=CONFIG_PATH, secrets_dir=SECRETS_DIR):
             raise ValueError("Invalid or duplicate host ID")
         if not isinstance(label, str) or not LABEL.fullmatch(label):
             raise ValueError("Invalid host label")
-        if not isinstance(target, str) or not TARGET.fullmatch(target) or ".." in target:
+        if not valid_target(target):
             raise ValueError("Invalid SSH target")
         directory = secrets_dir / host_id
         if directory.is_symlink():
@@ -91,7 +110,7 @@ def _unique_pairs(pairs):
 
 
 def legacy_registry(target, label, key, known_hosts):
-    if target and (not LEGACY_TARGET.fullmatch(target) or ".." in target):
+    if target and not valid_target(target, legacy=True):
         raise ValueError("Invalid SSH target")
     return Registry({"default": Host("default", label, target, key, known_hosts)}, "default")
 
