@@ -68,6 +68,8 @@ def valid_target(value, *, legacy=False):
 
 
 def valid_legacy_uri(value):
+    if not value.startswith("ssh://"):
+        return False
     match = LEGACY_URI.fullmatch(value)
     if match is None:
         return False

@@ -144,7 +144,8 @@ class HostRegistryTests(unittest.TestCase):
                        "ssh://audit@host..a:22", "ssh://audit@example.com:0",
                        "ssh://audit@example.com:65536", "ssh://audit@example.com:2222/id",
                        "ssh://audit@[1234]:2222", rejected_uri,
-                       "ssh://-oProxyCommand=id@host", "audit@fe80::1%eth0;id",
+                       "ssh://-oProxyCommand=id@host", "SSH://audit@example.com:2222",
+                       "audit@fe80::1%eth0;id",
                        "audit@1234:5678:9"):
             with self.assertRaises(ValueError):
                 legacy_registry(target, "Legacy", "key", "hosts")

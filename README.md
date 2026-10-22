@@ -135,7 +135,8 @@ non-default-port deployments continue to work. URI ports must be 1–65535.
 Native unbracketed IPv6 and constrained `%interface` scope names are accepted.
 Bracketed IPv6 inside an `ssh://` URI is rejected because the deployed
 OpenSSH client does not parse that form.
-These values remain operator-set environment configuration, never MCP input.
+The `ssh://` scheme must be lowercase. These values remain operator-set
+environment configuration, never MCP input.
 
 The operator-owned JSON file is mounted read-only at
 `/run/secrets/host-registry.json`. See `examples/host-registry.json` for a
