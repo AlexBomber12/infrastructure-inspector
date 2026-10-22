@@ -69,6 +69,18 @@ if bash "$repo_root/scripts/scan-secrets.sh" "$message_repo" >"$fixture_root/out
   exit 1
 fi
 
+path_repo="$fixture_root/path-history"
+new_repo "$path_repo"
+printf 'synthetic certificate bytes\n' >"$path_repo/credential.p12"
+git -C "$path_repo" add credential.p12
+git -C "$path_repo" commit -qm 'Add path-only fixture'
+git -C "$path_repo" rm -q credential.p12
+git -C "$path_repo" commit -qm 'Remove path-only fixture'
+if bash "$repo_root/scripts/scan-secrets.sh" "$path_repo" >"$fixture_root/output" 2>&1; then
+  echo 'Secret scan missed a historical path-only fixture' >&2
+  exit 1
+fi
+
 merge_repo="$fixture_root/merge"
 new_repo "$merge_repo"
 printf 'ordinary text\n' >"$merge_repo/example.txt"
@@ -151,6 +163,22 @@ if bash "$repo_root/scripts/scan-secrets.sh" "$clean_repo" >"$fixture_root/outpu
 fi
 git -C "$clean_repo" reset -q -- staged.txt
 rm "$clean_repo/staged.txt"
+
+printf 'synthetic certificate bytes\n' >"$clean_repo/credential.p12"
+git -C "$clean_repo" add credential.p12
+rm "$clean_repo/credential.p12"
+if bash "$repo_root/scripts/scan-secrets.sh" "$clean_repo" >"$fixture_root/output" 2>&1; then
+  echo 'Secret scan missed a staged path-only fixture' >&2
+  exit 1
+fi
+git -C "$clean_repo" reset -q -- credential.p12
+
+printf 'synthetic certificate bytes\n' >"$clean_repo/credential.p12"
+if bash "$repo_root/scripts/scan-secrets.sh" "$clean_repo" >"$fixture_root/output" 2>&1; then
+  echo 'Secret scan missed an untracked path-only fixture' >&2
+  exit 1
+fi
+rm "$clean_repo/credential.p12"
 
 printf 'secrets/\n' >"$clean_repo/.gitignore"
 mkdir "$clean_repo/secrets"
