@@ -1,7 +1,9 @@
 .env
 .env.*
 !.env.example
+!.env.multi.example
 secrets/
+private/
 *.key
 *.pem
 *.pre-ssh

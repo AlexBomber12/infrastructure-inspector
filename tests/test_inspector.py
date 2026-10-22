@@ -1,6 +1,7 @@
 import asyncio
 import importlib.util
 import io
+import json
 import os
 import runpy
 import subprocess
@@ -14,6 +15,7 @@ from unittest.mock import patch
 import server
 from bounded import Captured, run_bounded
 from catalog import CHECKS, LEGACY_OPERATIONS
+from hosts import Host, Registry, load_multi_registry, legacy_registry, configured_registry
 
 DISPATCHER_PATH = Path(__file__).resolve().parents[1] / "host" / "sg-audit-dispatch.py"
 spec = importlib.util.spec_from_file_location("dispatcher", DISPATCHER_PATH)
@@ -45,12 +47,147 @@ EXPECTED_COMMANDS = {
 }
 
 
+class HostRegistryTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.config = self.root / "registry.json"
+        self.secrets = self.root / "hosts"
+        self.data = {"default_host": "a", "hosts": [
+            {"id": "a", "label": "Host A", "target": "audit@host-a"},
+            {"id": "b", "label": "Host B", "target": "audit@host-b"},
+        ]}
+        for host_id in ("a", "b"):
+            directory = self.secrets / host_id
+            directory.mkdir(parents=True)
+            (directory / "identity").write_text("fixture")
+            (directory / "known_hosts").write_text("fixture")
+
+    def load(self):
+        self.config.write_text(json.dumps(self.data))
+        return load_multi_registry(self.config, self.secrets)
+
+    def test_valid_registry_routing_and_legacy(self):
+        registry = self.load()
+        self.assertEqual(registry.select(None).target, "audit@host-a")
+        self.assertEqual(registry.select("b").key, str(self.secrets / "b" / "identity"))
+        with patch.object(server, "MULTI_REGISTRY", registry), patch.object(
+            server, "run_bounded", return_value=Captured(0, b"ok", b"", False)
+        ) as run:
+            self.assertEqual(server.list_hosts(), [
+                {"host_id": "a", "label": "Host A"},
+                {"host_id": "b", "label": "Host B"},
+            ])
+            self.assertEqual(server.inspect("system.os")["host_id"], "a")
+            self.assertEqual(server.inspect("system.os", "b")["host_id"], "b")
+            self.assertEqual(run.call_args.args[0], [
+                "/usr/bin/ssh", "-F", "/dev/null", "-T", "-i",
+                str(self.secrets / "b" / "identity"),
+                "-o", "IdentitiesOnly=yes", "-o", "IdentityAgent=none",
+                "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
+                "-o", "UserKnownHostsFile=" + str(self.secrets / "b" / "known_hosts"),
+                "-o", "GlobalKnownHostsFile=/dev/null", "-o", "UpdateHostKeys=no",
+                "-o", "ConnectTimeout=5", "-o", "ConnectionAttempts=1",
+                "-o", "ClearAllForwardings=yes", "-o", "HostKeyAlgorithms=ssh-ed25519",
+                "audit@host-b", "system.os",
+            ])
+            self.assertEqual(server.inspect_batch(["system.os"], "b")[0]["host_id"], "b")
+            self.assertEqual(server.inspect_server("identity")["host"], "Host A")
+            for bad in ("unknown", "-oProxyCommand=id", 2, {}, "a; id"):
+                with self.assertRaises(ValueError):
+                    server.inspect("system.os", bad)
+            for bad in ("unknown", "a; id"):
+                with self.assertRaises(ValueError):
+                    server.inspect_batch(["system.os"], bad)
+            self.assertEqual(run.call_count, 4)
+        legacy = legacy_registry("audit@host-a", "Legacy", "key", "hosts")
+        self.assertEqual(legacy.select(None).host_id, "default")
+        self.assertEqual(legacy.select(None).label, "Legacy")
+        with patch.object(server, "MULTI_REGISTRY", None), patch.object(server, "SSH_TARGET", "audit@host-a"):
+            self.assertEqual(server.list_hosts(), [{"host_id": "default", "label": server.HOST_LABEL}])
+        for target in ("-oProxyCommand=id", "audit@host..a", "audit@host;id"):
+            with self.assertRaises(ValueError):
+                legacy_registry(target, "Legacy", "key", "hosts")
+
+    def test_invalid_registry_fields_and_limits(self):
+        self.load()
+        changes = [
+            {"default_host": "missing"}, {"hosts": []},
+            {"hosts": self.data["hosts"] * 5},
+            {"hosts": [self.data["hosts"][0]] * 2},
+            {"hosts": [{"id": "-bad", "label": "Host", "target": "audit@host"}]},
+            {"hosts": [{"id": "a", "label": "!", "target": "audit@host"}]},
+            {"hosts": [{"id": "a", "label": "Host", "target": "-oProxyCommand=id"}]},
+            {"hosts": [{"id": "a", "label": "Host", "target": "audit@host..a"}]},
+            {"hosts": [{"id": "a", "label": "Host"}]},
+            {"hosts": "wrong"}, {"hosts": [1]},
+        ]
+        for change in changes:
+            with self.subTest(change=change):
+                self.data = {"default_host": "a", "hosts": [
+                    {"id": "a", "label": "Host A", "target": "audit@host-a"},
+                    {"id": "b", "label": "Host B", "target": "audit@host-b"},
+                ]} | change
+                with self.assertRaises(ValueError):
+                    self.load()
+        for raw in ('{"default_host":"a","default_host":"b","hosts":[]}',
+                    "{bad", '[]', '{"hosts":[]}'):
+            with self.subTest(raw=raw):
+                self.config.write_text(raw)
+                with self.assertRaises(ValueError):
+                    load_multi_registry(self.config, self.secrets)
+        self.config.write_text("x" * 8193)
+        with self.assertRaises(ValueError):
+            load_multi_registry(self.config, self.secrets)
+        self.config.unlink()
+        with self.assertRaises(ValueError):
+            load_multi_registry(self.config, self.secrets)
+        self.config.symlink_to(self.root / "other")
+        with self.assertRaises(ValueError):
+            load_multi_registry(self.config, self.secrets)
+
+    def test_missing_and_unsafe_credentials_and_modes(self):
+        self.load()
+        (self.secrets / "b" / "identity").unlink()
+        with self.assertRaises(ValueError):
+            self.load()
+        (self.secrets / "b" / "identity").symlink_to(self.secrets / "a" / "identity")
+        with self.assertRaises(ValueError):
+            self.load()
+        (self.secrets / "b" / "identity").unlink()
+        (self.secrets / "b" / "identity").write_text("fixture")
+        (self.secrets / "b" / "known_hosts").unlink()
+        with self.assertRaises(ValueError):
+            self.load()
+        (self.secrets / "b" / "identity").unlink()
+        (self.secrets / "b").rmdir()
+        (self.secrets / "b").symlink_to(self.secrets / "a", target_is_directory=True)
+        with self.assertRaises(ValueError):
+            self.load()
+        with patch.dict(os.environ, {"INSPECTOR_HOST_MODE": "legacy"}):
+            self.assertIsNone(configured_registry())
+        with patch.dict(os.environ, {"INSPECTOR_HOST_MODE": "broken"}):
+            with self.assertRaises(ValueError):
+                configured_registry()
+        with patch.dict(os.environ, {"INSPECTOR_HOST_MODE": "multi"}), patch(
+            "hosts.load_multi_registry", return_value=Registry({}, "a")
+        ) as load:
+            self.assertIsInstance(configured_registry(), Registry)
+            load.assert_called_once()
+        with patch.dict(os.environ, {"INSPECTOR_HOST_MODE": "multi"}), patch(
+            "hosts.load_multi_registry", side_effect=ValueError("missing")
+        ):
+            with self.assertRaises(ValueError):
+                configured_registry()
+
+
 class InspectorTests(unittest.TestCase):
     def test_registered_tools(self):
         tools = asyncio.run(server.mcp.list_tools())
         self.assertEqual(
             {tool.name for tool in tools},
-            {"inspector_status", "inspect_server", "list_checks", "inspect", "inspect_batch"},
+            {"inspector_status", "inspect_server", "list_hosts", "list_checks", "inspect", "inspect_batch"},
         )
 
     def test_catalog_complete_and_consistent(self):

@@ -1,0 +1,7 @@
+{
+  "default_host": "example-a",
+  "hosts": [
+    {"id": "example-a", "label": "Example A", "target": "audit@host-a.example.invalid"},
+    {"id": "example-b", "label": "Example B", "target": "audit@host-b.example.invalid"}
+  ]
+}

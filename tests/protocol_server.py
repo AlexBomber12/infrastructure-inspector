@@ -6,11 +6,12 @@ from mcp.server.transport_security import TransportSecuritySettings
 
 import server
 from bounded import Captured
+from hosts import Host, Registry
 
 
 def fake_ssh(command, **_):
     with Path(os.environ["PROTOCOL_LOG"]).open("a", encoding="utf-8") as log:
-        log.write(command[-1] + "\n")
+        log.write(command[-2] + " " + command[-1] + "\n")
     if command[-1] == "system.memory":
         return Captured(1, b"", b"fixture failure", False)
     return Captured(0, (command[-1] + "\n").encode(), b"", False)
@@ -19,6 +20,10 @@ def fake_ssh(command, **_):
 server.run_bounded = fake_ssh
 server.SSH_TARGET = "fixture@localhost"
 server.HOST_LABEL = "protocol-fixture"
+server.MULTI_REGISTRY = Registry({
+    "a": Host("a", "protocol-fixture", "fixture@localhost", "/tmp/a-key", "/tmp/a-hosts"),
+    "b": Host("b", "protocol-second", "fixture@other", "/tmp/b-key", "/tmp/b-hosts"),
+}, "a")
 port = int(os.environ["PROTOCOL_PORT"])
 server.mcp.run(
     transport="streamable-http", host="127.0.0.1", port=port,

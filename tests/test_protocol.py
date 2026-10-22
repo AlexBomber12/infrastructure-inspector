@@ -61,9 +61,15 @@ async def _exercise(url, log):
             initialized = await session.initialize()
             assert initialized.server_info.name == "ssh-inspector-dev"
             tools = {tool.name: tool for tool in (await session.list_tools()).tools}
-            assert set(tools) == {"inspector_status", "list_checks", "inspect", "inspect_batch", "inspect_server"}
+            assert set(tools) == {"inspector_status", "list_hosts", "list_checks", "inspect", "inspect_batch", "inspect_server"}
             assert "check_id" in tools["inspect"].input_schema["properties"]
+            assert "host_id" in tools["inspect"].input_schema["properties"]
             assert "check_ids" in tools["inspect_batch"].input_schema["properties"]
+            assert "host_id" in tools["inspect_batch"].input_schema["properties"]
+            assert payload(await session.call_tool("list_hosts")) == [
+                {"host_id": "a", "label": "protocol-fixture"},
+                {"host_id": "b", "label": "protocol-second"},
+            ]
             status = payload(await session.call_tool("inspector_status"))
             assert "identity" in status["operations"]
             checks = payload(await session.call_tool("list_checks"))
@@ -72,6 +78,7 @@ async def _exercise(url, log):
             assert all(item["requires_elevation"] is False for item in checks)
             single = payload(await session.call_tool("inspect", {"check_id": "system.os"}))
             assert single["host"] == "protocol-fixture"
+            assert single["host_id"] == "a"
             assert single["status"] == "success"
             assert single["output"] == "system.os\n"
             for check_id in (
@@ -86,6 +93,12 @@ async def _exercise(url, log):
             batch = payload(await session.call_tool("inspect_batch", {"check_ids": ["system.os", "system.memory"]}))
             assert [item["status"] for item in batch] == ["success", "error"]
             assert batch[1]["error"] == "fixture failure"
+            second = payload(await session.call_tool("inspect", {"check_id": "system.os", "host_id": "b"}))
+            assert second["host"] == "protocol-second"
+            assert second["host_id"] == "b"
+            second_batch = payload(await session.call_tool("inspect_batch", {
+                "check_ids": ["system.os"], "host_id": "b"}))
+            assert second_batch[0]["host_id"] == "b"
             legacy = payload(await session.call_tool("inspect_server", {"operation": "uptime"}))
             assert legacy["operation"] == "uptime"
             before = log.read_text()
@@ -97,6 +110,8 @@ async def _exercise(url, log):
                 ("inspect_batch", {"check_ids": ["system.os", "bad"]}),
                 ("inspect_batch", {"check_ids": []}),
                 ("inspect_server", {"operation": "id; true"}),
+                ("inspect", {"check_id": "system.os", "host_id": "unknown"}),
+                ("inspect_batch", {"check_ids": ["system.os"], "host_id": "-oProxyCommand=id"}),
             ):
                 result = await session.call_tool(name, args)
                 assert result.is_error, (name, result)

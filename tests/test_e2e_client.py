@@ -59,6 +59,7 @@ def test_legacy_operation():
 def test_new_catalog_check():
     result = payload(asyncio.run(call("inspect", {"check_id": "system.os"})))
     assert result["host"] == "e2e-host"
+    assert result["host_id"] == "a"
     assert result["check_id"] == "system.os"
     assert result["status"] == "success"
     assert result["exit_code"] == 0
@@ -70,10 +71,11 @@ def test_new_catalog_check():
 
 def assert_result_schema(result, check_id):
     assert set(result) == {
-        "host", "check_id", "collected_at", "status", "exit_code",
+        "host", "host_id", "check_id", "collected_at", "status", "exit_code",
         "output", "truncated", "stderr_truncated", "error",
     }
     assert result["host"] == "e2e-host"
+    assert result["host_id"] == "a"
     assert result["check_id"] == check_id
     assert datetime.fromisoformat(result["collected_at"]).utcoffset().total_seconds() == 0
     assert result["status"] in {"success", "error", "incomplete"}
@@ -144,6 +146,29 @@ def test_unsupported_check_rejected():
     assert result.is_error
 
 
+def test_two_hosts_and_routing():
+    hosts = payload(asyncio.run(call("list_hosts")))
+    assert hosts == [{"host_id": "a", "label": "e2e-host"},
+                     {"host_id": "b", "label": "e2e-host-b"}]
+    result = payload(asyncio.run(call("inspect", {"check_id": "system.identity", "host_id": "b"})))
+    assert result["host_id"] == "b"
+    assert result["host"] == "e2e-host-b"
+    assert result["status"] == "success"
+    assert "uid=" in result["output"]
+    batch = payload(asyncio.run(call("inspect_batch", {
+        "check_ids": ["system.identity", "system.kernel"], "host_id": "b"})))
+    assert all(item["host_id"] == "b" and item["status"] == "success" for item in batch)
+    for host_id in ("missing", "b; id", "-oProxyCommand=id"):
+        assert asyncio.run(call("inspect", {"check_id": "system.identity", "host_id": host_id})).is_error
+
+
+def test_cross_host_credentials_rejected():
+    wrong_key = ssh("identity", key="/run/fixture/key_b")
+    assert wrong_key.returncode == 255
+    wrong_host_key = ssh("identity", known_hosts="/run/fixture/known_hosts_b")
+    assert wrong_host_key.returncode == 255
+
+
 def test_force_command_rejects_arbitrary_ssh():
     result = ssh("/usr/bin/id")
     assert result.returncode == 126
@@ -188,3 +213,6 @@ def test_unavailable_ssh_server():
     assert result["exit_code"] != 0
     assert result["error"]
     assert "PRIVATE KEY" not in json.dumps(result)
+    other = payload(asyncio.run(call("inspect", {"check_id": "system.identity", "host_id": "b"})))
+    assert other["host_id"] == "b"
+    assert other["status"] == "success"

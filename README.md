@@ -18,8 +18,9 @@ MCP tools:
 - `inspector_status`: reports available operations and configuration status.
 - `inspect_server`: executes an explicitly allowed diagnostic operation.
 - `list_checks()`: lists check IDs, descriptions, categories, privilege needs and limits.
-- `inspect(check_id)`: runs one registered check.
-- `inspect_batch(check_ids)`: runs one to five registered checks sequentially.
+- `list_hosts()`: lists configured host IDs and safe display labels.
+- `inspect(check_id, host_id=None)`: runs one registered check on the selected host.
+- `inspect_batch(check_ids, host_id=None)`: runs one to five registered checks on one selected host.
 
 Supported operations:
 
@@ -62,7 +63,7 @@ larger host would need a separately designed pagination interface. These
 checks cover selected Linux diagnostics, not a complete infrastructure
 inventory. Production Inspector 0.2.0 does not have these development checks.
 
-Each `inspect` result contains `host`, `check_id`, `collected_at` (UTC ISO
+Each `inspect` result contains `host`, `host_id`, `check_id`, `collected_at` (UTC ISO
 8601), `status` (`success`, `error`, or `incomplete`), `exit_code` (or null),
 `output`, `truncated`, `stderr_truncated`, and `error` (or null).
 `incomplete` means diagnostic stdout was truncated; `stderr_truncated`
@@ -119,6 +120,53 @@ Copy `.env.example` to `.env` and configure deployment-specific values.
 
 The example contains placeholders. Deployment requires a dedicated SSH account, authorized key, ForceCommand dispatcher, private key and trusted host key.
 
+### Multiple hosts (opt in)
+
+The existing `compose.yaml` and `.env.example` remain the supported single-host
+deployment. In that mode, the one host has public ID `default`; calls that omit
+`host_id` use it. For a separately reviewed multi-host deployment, use
+`compose.multi.yaml` and `.env.multi.example` as the starting points. The
+multi-host mode is selected by `INSPECTOR_HOST_MODE=multi`; a missing or invalid
+registry fails startup and never falls back to the legacy SSH target. Do not
+combine the two Compose files.
+
+The operator-owned JSON file is mounted read-only at
+`/run/secrets/host-registry.json`. See `examples/host-registry.json` for a
+synthetic example. Its exact schema is `{"default_host":"id","hosts":[...]}`;
+each host entry contains exactly `id`, `label`, and `target`. IDs use 1–32
+lowercase ASCII letters, digits, underscores or hyphens and start with a
+letter. Labels use 1–64 safe printable characters. Targets have the fixed
+`user@hostname` form, with no SSH options, port, whitespace or path syntax.
+There must be 1–8 hosts, unique IDs, and a default ID present in the list.
+The file is capped at 8 KiB; duplicate JSON fields and unknown fields fail.
+
+For host ID `example-a`, mount a dedicated private key at
+`/run/secrets/inspector-hosts/example-a/identity` and its trusted host-key file
+at `/run/secrets/inspector-hosts/example-a/known_hosts`. The names are derived
+from the validated ID; callers cannot provide credential paths or SSH targets.
+Each host uses its own key and `known_hosts`. The registry and credential tree
+must be mounted read-only and readable by container UID 65533. Keep them out
+of the public repository. The Inspector still uses strict host-key checking,
+disables agent and forwarding, and relies on each target's independent
+ForceCommand allowlist. The server-side dispatcher must be installed and
+configured separately on every additional Linux host.
+
+To add a host, provision its dedicated unprivileged audit account, ForceCommand
+dispatcher, authorized client key, and verified SSH host key; add the matching
+private key and `known_hosts` under its ID directory; then add its registry
+entry and restart the Inspector after an operator security review. Changing the
+default host changes where old `inspect`, `inspect_batch`, and `inspect_server`
+calls run, so preserve the existing default during migration unless callers
+have been reviewed. A requested host ID is only a lookup into the trusted
+registry and is never passed to SSH as a destination.
+
+The MCP transport has no application-level OAuth. This repository change does
+not authorize access to additional production hosts or a production rollout.
+Actual access expansion needs a separate security review and explicit operator
+approval. The disposable tests do not verify production authentication, network
+policy, target configuration, or the OpenAI Tunnel; a production smoke test
+remains a separately authorized activity.
+
 Never commit credentials, private keys, API keys or private infrastructure configuration.
 
 Run the complete local validation gate with `bash scripts/ci.sh`. WSL development
@@ -143,7 +191,7 @@ production Python files in `inspector/` and `host/`, including branch arcs;
 pytest-cov prints missing lines and branches and fails below 100%. Test files
 are outside the coverage source paths.
 
-The E2E layer starts actual Inspector, OpenSSH, and MCP client containers on an
+The E2E layer starts actual Inspector, two independent OpenSSH targets, and MCP client containers on an
 internal Docker network with no published ports. It generates temporary SSH
 keys and pinned `known_hosts`, and uses this repository's real ForceCommand
 dispatcher. It tests legacy and catalog operations, batching, unauthorized
