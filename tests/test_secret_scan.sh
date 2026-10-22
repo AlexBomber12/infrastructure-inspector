@@ -19,6 +19,9 @@ git -C "$clean_repo" add example.txt
 git -C "$clean_repo" commit -qm 'Clean root commit'
 bash "$repo_root/scripts/scan-secrets.sh" "$clean_repo" >/dev/null
 
+git -C "$clean_repo" worktree add -q "$fixture_root/linked" HEAD
+bash "$repo_root/scripts/scan-secrets.sh" "$fixture_root/linked" >/dev/null
+
 # The detector fixture is generated in a temporary repository, never committed
 # to this public repository. Check the root commit and a later commit separately.
 fixture_value='AKIAZ7X8Y9Q2W3E4R5T6'
@@ -42,6 +45,17 @@ for secret_position in root later; do
     exit 1
   fi
 done
+
+printf 'access_key = %s\n' "$fixture_value" >"$clean_repo/pending.txt"
+if bash "$repo_root/scripts/scan-secrets.sh" "$clean_repo" >"$fixture_root/output" 2>&1; then
+  echo 'Secret scan missed an untracked secret fixture' >&2
+  exit 1
+fi
+if grep -Fq "$fixture_value" "$fixture_root/output"; then
+  echo 'Secret scan exposed a pending finding in its output' >&2
+  exit 1
+fi
+rm "$clean_repo/pending.txt"
 
 # Reproduce a scanner that exits successfully after processing zero commits.
 # The fake executable only supplies output; the real scanner was exercised above.
