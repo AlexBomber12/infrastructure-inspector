@@ -3,6 +3,8 @@ set -euo pipefail
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 docker compose --env-file .env.example -f compose.yaml config --quiet
+docker compose --env-file .env.multi.example -f compose.multi.yaml config --quiet
+docker compose --env-file .env.multi.example -f compose.multi.yaml config --format json | python3 -c 'import json,sys; c=json.load(sys.stdin); assert set(c["services"]["inspector"]["networks"]) == {"mcp-private", "ssh-egress"}; assert c["networks"]["mcp-private"]["internal"] is True; assert not c["networks"]["ssh-egress"].get("internal", False)'
 docker build -f inspector/Dockerfile -t infrastructure-inspector:ci inspector
 docker build -f tests/Dockerfile -t infrastructure-inspector-test:ci .
 docker run --rm \
