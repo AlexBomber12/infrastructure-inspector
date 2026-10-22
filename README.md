@@ -33,9 +33,34 @@ Supported operations:
 | — | system.kernel | /usr/bin/uname -srmo |
 | — | system.cpu | /usr/bin/lscpu |
 | — | system.memory | /usr/bin/free -b |
+| — | system.block_devices | /usr/bin/lsblk --json --bytes -o NAME,KNAME,TYPE,SIZE,FSTYPE,MOUNTPOINTS,MODEL,TRAN |
+| — | system.filesystems | /usr/bin/df -P -B1 -T |
+| — | system.mounts | /usr/bin/findmnt --json -o TARGET,SOURCE,FSTYPE |
+| — | system.processes | /usr/bin/ps -eo pid,ppid,user,stat,comm --sort=pid |
+| — | network.interfaces | /usr/sbin/ip -j address show |
+| — | network.routes_ipv4 | /usr/sbin/ip -j -4 route show |
+| — | network.routes_ipv6 | /usr/sbin/ip -j -6 route show |
 
 All checks are read-only and unprivileged. No check accepts parameters. The
 legacy MCP tools and SSH operation strings remain available.
+
+The seven inventory checks above report block device names, sizes, filesystem
+types, mountpoints, models and transport; filesystem byte capacity and usage;
+mount targets and sources; process IDs, parent IDs, users, states and names;
+interface addresses; and IPv4 and IPv6 routes. They require only the dedicated
+unprivileged SSH account. `system.processes` uses the process name (`comm`),
+not command-line arguments or environment variables. No check requests disk
+serial numbers, SSH keys, credentials or arbitrary file contents.
+
+An empty JSON device or route list can be a complete, successful result.
+`error` indicates a command or transport failure; an unavailable utility may
+produce this status with a nonzero exit code. `incomplete` and `truncated: true`
+mean the bounded stdout is partial and must not be treated as a complete
+inventory, particularly for process and mount tables. The fixed 16,384-byte
+limit also applies to device and network output. Exhaustive inventory on a
+larger host would need a separately designed pagination interface. These
+checks cover selected Linux diagnostics, not a complete infrastructure
+inventory. Production Inspector 0.2.0 does not have these development checks.
 
 Each `inspect` result contains `host`, `check_id`, `collected_at` (UTC ISO
 8601), `status` (`success`, `error`, or `incomplete`), `exit_code` (or null),

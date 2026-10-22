@@ -20,6 +20,16 @@ COMMANDS = {
     "system.kernel": ["/usr/bin/uname", "-srmo"],
     "system.cpu": ["/usr/bin/lscpu"],
     "system.memory": ["/usr/bin/free", "-b"],
+    "system.block_devices": [
+        "/usr/bin/lsblk", "--json", "--bytes", "-o",
+        "NAME,KNAME,TYPE,SIZE,FSTYPE,MOUNTPOINTS,MODEL,TRAN",
+    ],
+    "system.filesystems": ["/usr/bin/df", "-P", "-B1", "-T"],
+    "system.mounts": ["/usr/bin/findmnt", "--json", "-o", "TARGET,SOURCE,FSTYPE"],
+    "system.processes": ["/usr/bin/ps", "-eo", "pid,ppid,user,stat,comm", "--sort=pid"],
+    "network.interfaces": ["/usr/sbin/ip", "-j", "address", "show"],
+    "network.routes_ipv4": ["/usr/sbin/ip", "-j", "-4", "route", "show"],
+    "network.routes_ipv6": ["/usr/sbin/ip", "-j", "-6", "route", "show"],
 }
 COMMANDS.update({
     "identity": COMMANDS["system.identity"],

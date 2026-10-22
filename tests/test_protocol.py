@@ -12,6 +12,8 @@ import time
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
+from catalog import CHECKS
+
 
 def payload(result):
     if result.structured_content is not None:
@@ -65,11 +67,22 @@ async def _exercise(url, log):
             status = payload(await session.call_tool("inspector_status"))
             assert "identity" in status["operations"]
             checks = payload(await session.call_tool("list_checks"))
-            assert any(item["check_id"] == "system.os" for item in checks)
+            assert len(checks) == 15
+            assert {item["check_id"] for item in checks} == set(CHECKS)
+            assert all(item["requires_elevation"] is False for item in checks)
             single = payload(await session.call_tool("inspect", {"check_id": "system.os"}))
             assert single["host"] == "protocol-fixture"
             assert single["status"] == "success"
             assert single["output"] == "system.os\n"
+            for check_id in (
+                "system.block_devices", "system.filesystems", "system.mounts",
+                "system.processes", "network.interfaces", "network.routes_ipv4",
+                "network.routes_ipv6",
+            ):
+                result = payload(await session.call_tool("inspect", {"check_id": check_id}))
+                assert result["check_id"] == check_id
+                assert result["status"] == "success"
+                assert result["output"] == check_id + "\n"
             batch = payload(await session.call_tool("inspect_batch", {"check_ids": ["system.os", "system.memory"]}))
             assert [item["status"] for item in batch] == ["success", "error"]
             assert batch[1]["error"] == "fixture failure"
@@ -79,6 +92,8 @@ async def _exercise(url, log):
             for name, args in (
                 ("inspect", {"check_id": "system.os; id"}),
                 ("inspect", {"check_id": 42}),
+                ("inspect", {"check_id": "system.processes --forest"}),
+                ("inspect", {"check_id": "network.routes_ipv6; id"}),
                 ("inspect_batch", {"check_ids": ["system.os", "bad"]}),
                 ("inspect_batch", {"check_ids": []}),
                 ("inspect_server", {"operation": "id; true"}),
