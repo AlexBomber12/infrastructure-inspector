@@ -91,7 +91,7 @@ def load_multi_registry(config_path=CONFIG_PATH, secrets_dir=SECRETS_DIR):
         directory = secrets_dir / host_id
         if directory.is_symlink():
             raise ValueError("Unsafe host credential directory")
-        hosts[host_id] = Host(host_id, label, target,
+        hosts[host_id] = Host(host_id, label, target.replace("[", "").replace("]", ""),
                               _credential(directory / "identity"),
                               _credential(directory / "known_hosts"))
     default = data["default_host"]
@@ -112,7 +112,8 @@ def _unique_pairs(pairs):
 def legacy_registry(target, label, key, known_hosts):
     if target and not valid_target(target, legacy=True):
         raise ValueError("Invalid SSH target")
-    return Registry({"default": Host("default", label, target, key, known_hosts)}, "default")
+    return Registry({"default": Host("default", label, target.replace("[", "").replace("]", ""),
+                                     key, known_hosts)}, "default")
 
 
 def configured_registry():

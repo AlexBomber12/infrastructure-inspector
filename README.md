@@ -137,7 +137,8 @@ each host entry contains exactly `id`, `label`, and `target`. IDs use 1–32
 lowercase ASCII letters, digits, underscores or hyphens and start with a
 letter. Labels use 1–64 safe printable characters. Targets have the fixed
 `user@hostname` or `user@[IPv6-address]` form, with no SSH options, port,
-whitespace or path syntax.
+whitespace or path syntax. Bracketed IPv6 addresses are validated and passed
+to OpenSSH without the brackets.
 There must be 1–8 hosts, unique IDs, and a default ID present in the list.
 The file is capped at 8 KiB; duplicate JSON fields and unknown fields fail.
 

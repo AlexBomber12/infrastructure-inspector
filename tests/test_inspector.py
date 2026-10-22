@@ -105,16 +105,16 @@ class HostRegistryTests(unittest.TestCase):
         self.assertEqual(legacy.select(None).host_id, "default")
         self.assertEqual(legacy.select(None).label, "Legacy")
         self.assertEqual(legacy_registry("audit@[2001:db8::10]", "IPv6", "key", "hosts")
-                         .select(None).target, "audit@[2001:db8::10]")
+                         .select(None).target, "audit@2001:db8::10")
         self.assertEqual(legacy_registry("[2001:db8::10]", "IPv6", "key", "hosts")
-                         .select(None).target, "[2001:db8::10]")
+                         .select(None).target, "2001:db8::10")
         with patch.object(server, "MULTI_REGISTRY", None), patch.object(
             server, "SSH_TARGET", "audit@[2001:db8::10]"
         ), patch.object(server, "run_bounded", return_value=Captured(0, b"ok", b"", False)) as run:
             self.assertEqual(server.inspect("system.os")["status"], "success")
-            self.assertEqual(run.call_args.args[0][-2:], ["audit@[2001:db8::10]", "system.os"])
+            self.assertEqual(run.call_args.args[0][-2:], ["audit@2001:db8::10", "system.os"])
         self.data["hosts"][1]["target"] = "audit@[2001:db8::10]"
-        self.assertEqual(self.load().select("b").target, "audit@[2001:db8::10]")
+        self.assertEqual(self.load().select("b").target, "audit@2001:db8::10")
         with patch.object(server, "MULTI_REGISTRY", None), patch.object(server, "SSH_TARGET", "audit@host-a"):
             self.assertEqual(server.list_hosts(), [{"host_id": "default", "label": server.HOST_LABEL}])
         for target in ("-oProxyCommand=id", "audit@host..a", "audit@host;id",
