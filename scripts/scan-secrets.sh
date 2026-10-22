@@ -39,6 +39,8 @@ fi
 # mirror also gives linked worktrees self-contained Git metadata in Docker.
 git clone --mirror -q "$scan_root" "$scratch/mirror.git" 2>/dev/null
 if ! docker run --rm --network none --read-only \
+  --user "$(id -u):$(id -g)" \
+  --env GIT_CONFIG_GLOBAL=/dev/null \
   --mount "type=bind,src=$scratch/mirror.git,dst=/repo,readonly" \
   "$image" git --no-banner --no-color --redact \
     --log-opts='--all --full-history -m --text --no-textconv --no-ext-diff' \
