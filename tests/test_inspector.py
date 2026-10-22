@@ -113,12 +113,22 @@ class HostRegistryTests(unittest.TestCase):
         ), patch.object(server, "run_bounded", return_value=Captured(0, b"ok", b"", False)) as run:
             self.assertEqual(server.inspect("system.os")["status"], "success")
             self.assertEqual(run.call_args.args[0][-2:], ["audit@2001:db8::10", "system.os"])
+        for uri in ("ssh://audit@example.com:2222", "ssh://example.com",
+                    "ssh://audit@[2001:db8::10]:2222"):
+            with self.subTest(uri=uri), patch.object(server, "MULTI_REGISTRY", None), patch.object(
+                server, "SSH_TARGET", uri
+            ), patch.object(server, "run_bounded", return_value=Captured(0, b"ok", b"", False)) as run:
+                self.assertEqual(server.inspect("system.os")["status"], "success")
+                self.assertEqual(run.call_args.args[0][-2:], [uri, "system.os"])
         self.data["hosts"][1]["target"] = "audit@[2001:db8::10]"
         self.assertEqual(self.load().select("b").target, "audit@2001:db8::10")
         with patch.object(server, "MULTI_REGISTRY", None), patch.object(server, "SSH_TARGET", "audit@host-a"):
             self.assertEqual(server.list_hosts(), [{"host_id": "default", "label": server.HOST_LABEL}])
         for target in ("-oProxyCommand=id", "audit@host..a", "audit@host;id",
-                       "audit@[invalid]", "audit@[1234]", 42):
+                       "audit@[invalid]", "audit@[1234]", 42,
+                       "ssh://audit@host..a:22", "ssh://audit@example.com:0",
+                       "ssh://audit@example.com:65536", "ssh://audit@example.com:2222/id",
+                       "ssh://audit@[1234]:2222", "ssh://-oProxyCommand=id@host"):
             with self.assertRaises(ValueError):
                 legacy_registry(target, "Legacy", "key", "hosts")
 

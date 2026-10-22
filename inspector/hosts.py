@@ -16,6 +16,11 @@ TARGET = re.compile(r"[a-z_][a-z0-9_-]{0,31}@[a-z0-9][a-z0-9.-]{0,252}\Z", re.AS
 LEGACY_TARGET = re.compile(r"(?:[a-z_][a-z0-9_-]{0,31}@)?[a-z0-9][a-z0-9.-]{0,252}\Z", re.ASCII)
 IPV6_TARGET = re.compile(r"[a-z_][a-z0-9_-]{0,31}@\[([0-9a-fA-F:.]+)\]\Z", re.ASCII)
 LEGACY_IPV6_TARGET = re.compile(r"(?:[a-z_][a-z0-9_-]{0,31}@)?\[([0-9a-fA-F:.]+)\]\Z", re.ASCII)
+LEGACY_URI = re.compile(
+    r"ssh://(?:[a-z_][a-z0-9_-]{0,31}@)?"
+    r"(?:([a-z0-9][a-z0-9.-]{0,252})|\[([0-9a-fA-F:.]+)\])"
+    r"(?::([0-9]{1,5}))?\Z", re.ASCII,
+)
 LABEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9 _.-]{0,63}\Z", re.ASCII)
 
 
@@ -49,12 +54,33 @@ def valid_target(value, *, legacy=False):
         return True
     match = (LEGACY_IPV6_TARGET if legacy else IPV6_TARGET).fullmatch(value)
     if match is None:
-        return False
+        return legacy and valid_legacy_uri(value)
     try:
         ipaddress.IPv6Address(match.group(1))
     except ValueError:
         return False
     return True
+
+
+def valid_legacy_uri(value):
+    match = LEGACY_URI.fullmatch(value)
+    if match is None:
+        return False
+    hostname, ipv6, port = match.groups()
+    if hostname is not None and ".." in hostname:
+        return False
+    if ipv6 is not None:
+        try:
+            ipaddress.IPv6Address(ipv6)
+        except ValueError:
+            return False
+    if port is not None and not 1 <= int(port) <= 65535:
+        return False
+    return True
+
+
+def normalized_target(value):
+    return value if value.startswith("ssh://") else value.replace("[", "").replace("]", "")
 
 
 def _credential(path):
@@ -91,7 +117,7 @@ def load_multi_registry(config_path=CONFIG_PATH, secrets_dir=SECRETS_DIR):
         directory = secrets_dir / host_id
         if directory.is_symlink():
             raise ValueError("Unsafe host credential directory")
-        hosts[host_id] = Host(host_id, label, target.replace("[", "").replace("]", ""),
+        hosts[host_id] = Host(host_id, label, normalized_target(target),
                               _credential(directory / "identity"),
                               _credential(directory / "known_hosts"))
     default = data["default_host"]
@@ -112,7 +138,7 @@ def _unique_pairs(pairs):
 def legacy_registry(target, label, key, known_hosts):
     if target and not valid_target(target, legacy=True):
         raise ValueError("Invalid SSH target")
-    return Registry({"default": Host("default", label, target.replace("[", "").replace("]", ""),
+    return Registry({"default": Host("default", label, normalized_target(target),
                                      key, known_hosts)}, "default")
 
 
