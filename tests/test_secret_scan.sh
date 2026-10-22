@@ -59,6 +59,47 @@ for secret_position in root later; do
   fi
 done
 
+message_repo="$fixture_root/message"
+new_repo "$message_repo"
+printf 'ordinary text\n' >"$message_repo/example.txt"
+git -C "$message_repo" add example.txt
+git -C "$message_repo" commit -qm "access_key = $fixture_value"
+if bash "$repo_root/scripts/scan-secrets.sh" "$message_repo" >"$fixture_root/output" 2>&1; then
+  echo 'Secret scan missed a commit-message fixture' >&2
+  exit 1
+fi
+
+merge_repo="$fixture_root/merge"
+new_repo "$merge_repo"
+printf 'ordinary text\n' >"$merge_repo/example.txt"
+git -C "$merge_repo" add example.txt
+git -C "$merge_repo" commit -qm 'Clean root commit'
+base_branch="$(git -C "$merge_repo" branch --show-current)"
+git -C "$merge_repo" switch -q -c side-one
+printf 'side one\n' >"$merge_repo/side-one.txt"
+git -C "$merge_repo" add side-one.txt
+git -C "$merge_repo" commit -qm 'Clean side one'
+git -C "$merge_repo" switch -q "$base_branch"
+printf 'main one\n' >"$merge_repo/main-one.txt"
+git -C "$merge_repo" add main-one.txt
+git -C "$merge_repo" commit -qm 'Clean main one'
+git -C "$merge_repo" merge -q --no-ff --no-commit side-one >/dev/null
+printf 'access_key = %s\n' "$fixture_value" >"$merge_repo/merge-only.txt"
+git -C "$merge_repo" add merge-only.txt
+git -C "$merge_repo" commit -qm 'Merge with synthetic resolution'
+git -C "$merge_repo" switch -q -c side-two HEAD~2
+printf 'side two\n' >"$merge_repo/side-two.txt"
+git -C "$merge_repo" add side-two.txt
+git -C "$merge_repo" commit -qm 'Clean side two'
+git -C "$merge_repo" switch -q "$base_branch"
+git -C "$merge_repo" merge -q --no-ff --no-commit side-two >/dev/null
+git -C "$merge_repo" rm -q merge-only.txt
+git -C "$merge_repo" commit -qm 'Remove synthetic resolution'
+if bash "$repo_root/scripts/scan-secrets.sh" "$merge_repo" >"$fixture_root/output" 2>&1; then
+  echo 'Secret scan missed a merge-resolution fixture' >&2
+  exit 1
+fi
+
 # A removed binary-classified blob exists only in history. Both NUL detection
 # and a -diff attribute must still leave its contents visible to the scanner.
 for binary_kind in nul attribute; do

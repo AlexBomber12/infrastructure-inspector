@@ -12,7 +12,7 @@ if [[ "$(git -C "$scan_root" rev-parse --is-shallow-repository)" == true ]]; the
   echo "Secret scan requires full Git history; this repository is shallow" >&2
   exit 1
 fi
-patch_bytes="$(git -C "$scan_root" log --all --full-history -p --text --no-textconv --no-ext-diff --format= | wc -c)"
+patch_bytes="$(git -C "$scan_root" log --all --full-history -m -p --text --no-textconv --no-ext-diff --format='%B' | wc -c)"
 if (( patch_bytes == 0 )); then
   echo "Secret scan refused an empty Git history" >&2
   exit 1
@@ -24,7 +24,7 @@ trap 'rm -f "$scan_output"' EXIT
 
 # Git runs on the host so linked worktrees can resolve external Git metadata.
 # pipefail ensures a failed Git producer cannot produce a green stdin scan.
-if ! git -C "$scan_root" log --all --full-history -p -U0 --text --no-textconv --no-ext-diff --format= 2>/dev/null |
+if ! git -C "$scan_root" log --all --full-history -m -p -U0 --text --no-textconv --no-ext-diff --format='%B' 2>/dev/null |
   tr '\000' '\n' |
   docker run --rm -i --network none --read-only \
     "$image" stdin --no-banner --no-color --redact >"$scan_output" 2>&1 ||
