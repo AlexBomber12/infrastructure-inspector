@@ -9,13 +9,6 @@ import time
 # This is the target host's independent authorization boundary. Do not import
 # the MCP catalog or accept arguments from SSH_ORIGINAL_COMMAND.
 COMMANDS = {
-    "identity": ["/usr/bin/id"],
-    "uptime": ["/usr/bin/uptime"],
-    "listeners": ["/usr/bin/ss", "-H", "-lnt"],
-    "services": [
-        "/usr/bin/systemctl", "list-units", "--type=service",
-        "--state=running", "--no-pager", "--plain", "--no-legend",
-    ],
     "system.identity": ["/usr/bin/id"],
     "system.uptime": ["/usr/bin/uptime"],
     "network.listeners": ["/usr/bin/ss", "-H", "-lnt"],
@@ -28,6 +21,12 @@ COMMANDS = {
     "system.cpu": ["/usr/bin/lscpu"],
     "system.memory": ["/usr/bin/free", "-b"],
 }
+COMMANDS.update({
+    "identity": COMMANDS["system.identity"],
+    "uptime": COMMANDS["system.uptime"],
+    "listeners": COMMANDS["network.listeners"],
+    "services": COMMANDS["system.services"],
+})
 
 OUTPUT_LIMIT = 16384
 ERROR_LIMIT = 1024
