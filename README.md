@@ -73,13 +73,17 @@ The example contains placeholders. Deployment requires a dedicated SSH account, 
 
 Never commit credentials, private keys, API keys or private infrastructure configuration.
 
-Validate Docker Compose using:
-
-`docker compose --env-file .env.example config --quiet`
+Run the local validation gate using `bash scripts/ci.sh`. It validates Compose,
+builds the Inspector image, runs the isolated unit tests, and checks the complete
+Git history for secrets with a tested, version-pinned scanner.
 
 ## Tests
 
 GitHub Actions validates Compose, builds the Inspector image and runs isolated unit tests without SSH credentials or network access.
+
+Contributions follow the manual PR and review workflow in `AGENTS.md`. Production
+Python coverage should be measured for both lines and branches as the test suite
+grows toward 100%; this is not yet a CI threshold.
 
 Unit tests do not replace integration testing of SSH restrictions on the target host.
 
