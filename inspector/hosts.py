@@ -12,15 +12,16 @@ SECRETS_DIR = Path("/run/secrets/inspector-hosts")
 MAX_HOSTS = 8
 MAX_CONFIG_BYTES = 8192
 HOST_ID = re.compile(r"[a-z][a-z0-9_-]{0,31}\Z", re.ASCII)
-TARGET = re.compile(r"[a-z_][a-z0-9_-]{0,31}@[a-z0-9][a-z0-9.-]{0,252}\Z", re.ASCII)
-LEGACY_TARGET = re.compile(r"(?:[a-z_][a-z0-9_-]{0,31}@)?[a-z0-9][a-z0-9.-]{0,252}\Z", re.ASCII | re.IGNORECASE)
+SSH_USER = r"[a-z_][a-z0-9_.+-]{0,63}"
+TARGET = re.compile(rf"{SSH_USER}@[a-z0-9][a-z0-9.-]{{0,252}}\Z", re.ASCII)
+LEGACY_TARGET = re.compile(rf"(?:{SSH_USER}@)?[a-z0-9][a-z0-9.-]{{0,252}}\Z", re.ASCII | re.IGNORECASE)
 IPV6_BODY = r"[0-9a-fA-F:.]+(?:%[A-Za-z0-9_.-]{1,32})?"
-IPV6_TARGET = re.compile(rf"[a-z_][a-z0-9_-]{{0,31}}@\[({IPV6_BODY})\]\Z", re.ASCII)
-LEGACY_IPV6_TARGET = re.compile(rf"(?:[a-z_][a-z0-9_-]{{0,31}}@)?\[({IPV6_BODY})\]\Z", re.ASCII | re.IGNORECASE)
-IPV6_NATIVE = re.compile(rf"[a-z_][a-z0-9_-]{{0,31}}@({IPV6_BODY})\Z", re.ASCII)
-LEGACY_IPV6_NATIVE = re.compile(rf"(?:[a-z_][a-z0-9_-]{{0,31}}@)?({IPV6_BODY})\Z", re.ASCII | re.IGNORECASE)
+IPV6_TARGET = re.compile(rf"{SSH_USER}@\[({IPV6_BODY})\]\Z", re.ASCII)
+LEGACY_IPV6_TARGET = re.compile(rf"(?:{SSH_USER}@)?\[({IPV6_BODY})\]\Z", re.ASCII | re.IGNORECASE)
+IPV6_NATIVE = re.compile(rf"{SSH_USER}@({IPV6_BODY})\Z", re.ASCII)
+LEGACY_IPV6_NATIVE = re.compile(rf"(?:{SSH_USER}@)?({IPV6_BODY})\Z", re.ASCII | re.IGNORECASE)
 LEGACY_URI = re.compile(
-    r"ssh://(?:[a-z_][a-z0-9_-]{0,31}@)?"
+    rf"ssh://(?:{SSH_USER}@)?"
     r"([a-z0-9][a-z0-9.-]{0,252})(?::([0-9]{1,5}))?\Z",
     re.ASCII | re.IGNORECASE,
 )

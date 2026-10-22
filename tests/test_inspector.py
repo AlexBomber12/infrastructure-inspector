@@ -117,7 +117,8 @@ class HostRegistryTests(unittest.TestCase):
             self.assertEqual(run.call_args.args[0][-2:], ["audit@2001:db8::10", "system.os"])
         for uri in ("ssh://audit@example.com:2222", "ssh://example.com",
                     "ssh://audit@Server.Example.COM:2222", "audit@Server.Example.COM",
-                    "audit@2001:db8::10", "audit@fe80::1%eth0", "2001:db8::10"):
+                    "audit@2001:db8::10", "audit@fe80::1%eth0", "2001:db8::10",
+                    "audit.user@example.com", "ssh://audit.user+tag@example.com:2222"):
             with self.subTest(uri=uri), patch.object(server, "MULTI_REGISTRY", None), patch.object(
                 server, "SSH_TARGET", uri
             ), patch.object(server, "run_bounded", return_value=Captured(0, b"ok", b"", False)) as run:
@@ -137,6 +138,8 @@ class HostRegistryTests(unittest.TestCase):
         self.assertEqual(self.load().select("b").target, "audit@2001:db8::10")
         self.data["hosts"][1]["target"] = "audit@fe80::1%eth0"
         self.assertEqual(self.load().select("b").target, "audit@fe80::1%eth0")
+        self.data["hosts"][1]["target"] = "audit.user+tag@host-b"
+        self.assertEqual(self.load().select("b").target, "audit.user+tag@host-b")
         with patch.object(server, "MULTI_REGISTRY", None), patch.object(server, "SSH_TARGET", "audit@host-a"):
             self.assertEqual(server.list_hosts(), [{"host_id": "default", "label": server.HOST_LABEL}])
         for target in ("-oProxyCommand=id", "audit@host..a", "audit@host;id",
