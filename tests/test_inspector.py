@@ -32,6 +32,16 @@ EXPECTED_COMMANDS = {
     "system.kernel": ["/usr/bin/uname", "-srmo"],
     "system.cpu": ["/usr/bin/lscpu"],
     "system.memory": ["/usr/bin/free", "-b"],
+    "system.block_devices": [
+        "/usr/bin/lsblk", "--json", "--bytes", "-o",
+        "NAME,KNAME,TYPE,SIZE,FSTYPE,MOUNTPOINTS,MODEL,TRAN",
+    ],
+    "system.filesystems": ["/usr/bin/df", "-P", "-B1", "-T"],
+    "system.mounts": ["/usr/bin/findmnt", "--json", "-o", "TARGET,SOURCE,FSTYPE"],
+    "system.processes": ["/usr/bin/ps", "-eo", "pid,ppid,user,stat,comm", "--sort=pid"],
+    "network.interfaces": ["/usr/sbin/ip", "-j", "address", "show"],
+    "network.routes_ipv4": ["/usr/sbin/ip", "-j", "-4", "route", "show"],
+    "network.routes_ipv6": ["/usr/sbin/ip", "-j", "-6", "route", "show"],
 }
 
 
@@ -45,6 +55,7 @@ class InspectorTests(unittest.TestCase):
 
     def test_catalog_complete_and_consistent(self):
         self.assertEqual(set(CHECKS), set(EXPECTED_COMMANDS))
+        self.assertEqual(len(CHECKS), 15)
         self.assertEqual(set(LEGACY_OPERATIONS.values()), {
             "system.identity", "system.uptime", "network.listeners", "system.services",
         })
@@ -87,7 +98,9 @@ class InspectorTests(unittest.TestCase):
     def test_unknown_malformed_and_injected_requests_do_not_reach_ssh(self):
         with patch.object(server, "run_bounded") as run:
             for value in ("", "whoami", "system.os; id", "system.cpu && reboot",
-                          "/bin/sh", "../etc/passwd", None, 1, ["system.os"]):
+                          "system.block_devices --output SERIAL", "network.interfaces; id",
+                          "network.routes_ipv4 -j", "/bin/sh", "../etc/passwd", None,
+                          1, ["system.os"]):
                 with self.subTest(value=value), self.assertRaises(ValueError):
                     server.inspect(value)
             for value in ("whoami", "uptime; id", "services && reboot", "/bin/sh", None):
@@ -144,6 +157,50 @@ class InspectorTests(unittest.TestCase):
                     if b"diagnostic stderr truncated" in captured.stderr:
                         self.assertTrue(result["stderr_truncated"])
                         self.assertEqual(result["output"], "complete")
+
+    def test_decoded_output_respects_utf8_byte_limit(self):
+        limit = CHECKS["system.os"].max_output_bytes
+        cases = (
+            (b"\xff" * limit, "\ufffd" * (limit // 3), "incomplete", True),
+            (b"a" * (limit - 1) + b"\xe2", "a" * (limit - 1), "incomplete", True),
+            (b"a" * (limit - 3) + "€".encode(), "a" * (limit - 3) + "€", "success", False),
+            (b"a" * limit, "a" * limit, "success", False),
+        )
+        with patch.object(server, "SSH_TARGET", "host"):
+            for raw, expected, status, truncated in cases:
+                with self.subTest(raw_suffix=raw[-4:]), patch.object(
+                    server, "run_bounded", return_value=Captured(0, raw, b"", False)
+                ):
+                    result = server.inspect("system.os")
+                    self.assertEqual(result["output"], expected)
+                    self.assertLessEqual(len(result["output"].encode("utf-8")), limit)
+                    self.assertEqual(result["status"], status)
+                    self.assertIs(result["truncated"], truncated)
+                    self.assertEqual(result["exit_code"], 0)
+                    self.assertEqual(
+                        result["error"], "Diagnostic output was truncated" if truncated else None
+                    )
+            with patch.object(server, "run_bounded", return_value=Captured(
+                7, b"\xff" * limit, b"diagnostic failed", False
+            )):
+                result = server.inspect("system.os")
+                self.assertEqual(result["status"], "incomplete")
+                self.assertEqual(result["exit_code"], 7)
+                self.assertEqual(result["error"], "diagnostic failed")
+
+    def test_empty_routes_and_devices_are_successful(self):
+        with patch.object(server, "SSH_TARGET", "host"):
+            for check_id, output in (
+                ("system.block_devices", b'{"blockdevices":[]}\n'),
+                ("network.routes_ipv4", b"[]\n"),
+                ("network.routes_ipv6", b"[]\n"),
+            ):
+                with self.subTest(check_id=check_id), patch.object(
+                    server, "run_bounded", return_value=Captured(0, output, b"", False)
+                ):
+                    result = server.inspect(check_id)
+                    self.assertEqual(result["status"], "success")
+                    self.assertEqual(result["output"], output.decode())
 
     def test_batch_validation_and_partial_failure(self):
         with patch.object(server, "run_bounded") as run:

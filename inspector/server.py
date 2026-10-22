@@ -70,7 +70,12 @@ def _run_check(check_id, operation):
         result["error"] = "SSH diagnostic could not start"
         return result
     result["exit_code"] = captured.returncode
-    result["output"] = captured.stdout.decode("utf-8", errors="replace")
+    output = captured.stdout.decode("utf-8", errors="replace")
+    encoded_output = output.encode("utf-8")
+    output_truncated = len(encoded_output) > check.max_output_bytes
+    if output_truncated:
+        output = encoded_output[:check.max_output_bytes].decode("utf-8", errors="ignore")
+    result["output"] = output
     error = _safe_error(captured.stderr.decode("utf-8", errors="replace"))
     result["stderr_truncated"] = (
         captured.stderr_truncated or "ERROR: diagnostic stderr truncated" in error
@@ -78,7 +83,7 @@ def _run_check(check_id, operation):
     if captured.stderr_truncated:
         marker = " [SSH stderr truncated]"
         error = error[:ERROR_LIMIT - len(marker)] + marker
-    result["truncated"] = captured.truncated or (
+    result["truncated"] = captured.truncated or output_truncated or (
         captured.returncode == 125
         and error.startswith("ERROR: diagnostic output truncated")
     )

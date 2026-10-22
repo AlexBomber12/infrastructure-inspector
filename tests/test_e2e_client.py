@@ -3,12 +3,22 @@ import asyncio
 import json
 import os
 import subprocess
+from datetime import datetime
 
 import pytest
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
 URL = "http://inspector:8000/mcp"
+ORIGINAL_CHECKS = (
+    "system.identity", "system.uptime", "network.listeners", "system.services",
+    "system.os", "system.kernel", "system.cpu", "system.memory",
+)
+INVENTORY_CHECKS = (
+    "system.block_devices", "system.filesystems", "system.mounts",
+    "system.processes", "network.interfaces", "network.routes_ipv4",
+    "network.routes_ipv6",
+)
 SSH = [
     "/usr/bin/ssh", "-F", "/dev/null", "-T", "-o", "BatchMode=yes",
     "-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=5",
@@ -58,6 +68,69 @@ def test_new_catalog_check():
     assert result["collected_at"].endswith("+00:00")
 
 
+def assert_result_schema(result, check_id):
+    assert set(result) == {
+        "host", "check_id", "collected_at", "status", "exit_code",
+        "output", "truncated", "stderr_truncated", "error",
+    }
+    assert result["host"] == "e2e-host"
+    assert result["check_id"] == check_id
+    assert datetime.fromisoformat(result["collected_at"]).utcoffset().total_seconds() == 0
+    assert result["status"] in {"success", "error", "incomplete"}
+    assert isinstance(result["output"], str)
+    assert len(result["output"].encode()) <= 16384
+    assert isinstance(result["truncated"], bool)
+    assert isinstance(result["stderr_truncated"], bool)
+    assert result["error"] is None or len(result["error"]) <= 1024
+
+
+def test_catalog_discovery_and_original_checks():
+    checks = payload(asyncio.run(call("list_checks")))
+    assert {item["check_id"] for item in checks} == set(ORIGINAL_CHECKS + INVENTORY_CHECKS)
+    assert len(checks) == 15
+    assert all(item["requires_elevation"] is False for item in checks)
+    for check_id in ORIGINAL_CHECKS:
+        result = payload(asyncio.run(call("inspect", {"check_id": check_id})))
+        assert_result_schema(result, check_id)
+        if check_id == "system.services":
+            # The disposable image has no running systemd service manager.
+            assert result["status"] == "error"
+            assert result["exit_code"] != 0
+            assert result["error"]
+        else:
+            assert result["status"] == "success", (check_id, result)
+            assert result["exit_code"] == 0
+
+
+@pytest.mark.parametrize("check_id", INVENTORY_CHECKS)
+def test_inventory_checks(check_id):
+    result = payload(asyncio.run(call("inspect", {"check_id": check_id})))
+    assert_result_schema(result, check_id)
+    assert result["status"] == "success", (check_id, result)
+    assert result["exit_code"] == 0
+    assert result["truncated"] is False
+    assert result["error"] is None
+    if check_id == "system.block_devices":
+        assert isinstance(json.loads(result["output"])["blockdevices"], list)
+    elif check_id == "system.filesystems":
+        assert result["output"].splitlines()[0].split() == [
+            "Filesystem", "Type", "1-blocks", "Used", "Available", "Capacity", "Mounted", "on",
+        ]
+    elif check_id == "system.mounts":
+        assert isinstance(json.loads(result["output"])["filesystems"], list)
+    elif check_id == "system.processes":
+        lines = result["output"].splitlines()
+        assert lines[0].split() == ["PID", "PPID", "USER", "STAT", "COMMAND"]
+        assert len(lines) > 1
+        assert all(len(line.split()) >= 5 for line in lines[1:])
+        assert "--sort=pid" not in result["output"]
+    elif check_id == "network.interfaces":
+        assert isinstance(json.loads(result["output"]), list)
+    else:
+        # An empty routing table is a valid successful result.
+        assert isinstance(json.loads(result["output"]), list)
+
+
 def test_batch_multiple_checks():
     result = payload(asyncio.run(call("inspect_batch", {"check_ids": ["system.identity", "system.kernel"]})))
     assert [item["check_id"] for item in result] == ["system.identity", "system.kernel"]
@@ -95,11 +168,23 @@ def test_shell_injection_rejected():
     assert b"DENIED" in result.stderr
 
 
+@pytest.mark.parametrize("command", (
+    "system.block_devices --output SERIAL", "system.filesystems /etc/shadow",
+    "system.mounts; id", "system.processes --forest",
+    "network.interfaces; id", "network.routes_ipv4 -j", "network.routes_ipv6 && id",
+))
+def test_inventory_arguments_rejected_by_force_command(command):
+    result = ssh(command)
+    assert result.returncode == 126
+    assert b"DENIED" in result.stderr
+
+
 def test_unavailable_ssh_server():
     result = payload(asyncio.run(asyncio.wait_for(
         call("inspect", {"check_id": "system.os"}), timeout=20,
     )))
     assert result["status"] == "error"
+    assert_result_schema(result, "system.os")
     assert result["exit_code"] != 0
     assert result["error"]
     assert "PRIVATE KEY" not in json.dumps(result)

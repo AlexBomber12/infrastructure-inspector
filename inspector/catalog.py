@@ -21,6 +21,13 @@ CHECKS = {
     "system.kernel": Check("Kernel and machine information", "system"),
     "system.cpu": Check("CPU architecture and topology", "system"),
     "system.memory": Check("Memory usage in bytes", "system"),
+    "system.block_devices": Check("Block device names, sizes, filesystems, mountpoints, models and transport", "system"),
+    "system.filesystems": Check("Filesystem capacity and usage in bytes", "system"),
+    "system.mounts": Check("Mounted filesystem targets, sources and types", "system"),
+    "system.processes": Check("Process IDs, parents, users, states and names", "system"),
+    "network.interfaces": Check("Network interfaces and addresses", "network"),
+    "network.routes_ipv4": Check("IPv4 routing table", "network"),
+    "network.routes_ipv6": Check("IPv6 routing table", "network"),
 }
 
 LEGACY_OPERATIONS = {
