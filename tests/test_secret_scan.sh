@@ -37,7 +37,7 @@ fi
 
 # The detector fixture is generated in a temporary repository, never committed
 # to this public repository. Check the root commit and a later commit separately.
-fixture_value='AKIAZ7X8Y9Q2W3E4R5T6'
+fixture_value="$(printf '%s%s' 'AK' 'IAZ7X8Y9Q2W3E4R5T6')"
 for secret_position in root later; do
   secret_repo="$fixture_root/$secret_position"
   new_repo "$secret_repo"
@@ -55,6 +55,37 @@ for secret_position in root later; do
   fi
   if grep -Fq "$fixture_value" "$fixture_root/output"; then
     echo 'Secret scan exposed a finding in its output' >&2
+    exit 1
+  fi
+done
+
+# A removed binary-classified blob exists only in history. Both NUL detection
+# and a -diff attribute must still leave its contents visible to the scanner.
+for binary_kind in nul attribute; do
+  binary_repo="$fixture_root/binary-$binary_kind"
+  new_repo "$binary_repo"
+  if [[ "$binary_kind" == attribute ]]; then
+    printf '*.dat -diff\n' >"$binary_repo/.gitattributes"
+    git -C "$binary_repo" add .gitattributes
+  fi
+  printf 'ordinary text\n' >"$binary_repo/example.txt"
+  git -C "$binary_repo" add example.txt
+  git -C "$binary_repo" commit -qm 'Clean root commit'
+  if [[ "$binary_kind" == nul ]]; then
+    printf 'access_key = %s\000\n' "$fixture_value" >"$binary_repo/past.dat"
+  else
+    printf 'access_key = %s\n' "$fixture_value" >"$binary_repo/past.dat"
+  fi
+  git -C "$binary_repo" add past.dat
+  git -C "$binary_repo" commit -qm 'Synthetic historical blob'
+  git -C "$binary_repo" rm -q past.dat
+  git -C "$binary_repo" commit -qm 'Remove synthetic blob'
+  if bash "$repo_root/scripts/scan-secrets.sh" "$binary_repo" >"$fixture_root/output" 2>&1; then
+    echo "Secret scan missed a removed $binary_kind blob" >&2
+    exit 1
+  fi
+  if grep -Fq "$fixture_value" "$fixture_root/output"; then
+    echo 'Secret scan exposed a historical finding in its output' >&2
     exit 1
   fi
 done
