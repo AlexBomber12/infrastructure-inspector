@@ -18,29 +18,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
 
-      - name: Validate Docker Compose
-        run: docker compose --env-file .env.example -f compose.yaml config --quiet
-
-      - name: Build Inspector
-        run: docker build -f inspector/Dockerfile -t infrastructure-inspector:ci inspector
-
-      - name: Run isolated tests
-        run: |
-          docker run --rm \
-            --network none \
-            --read-only \
-            --user 65533:65533 \
-            --cap-drop ALL \
-            --security-opt no-new-privileges:true \
-            --memory 256m \
-            --pids-limit 64 \
-            --mount "type=bind,src=$PWD/tests,dst=/opt/tests,readonly" \
-            --mount "type=bind,src=$PWD/host,dst=/opt/host,readonly" \
-            --entrypoint python \
-            infrastructure-inspector:ci \
-            -m unittest discover -s /opt/tests -v
+      - name: Run local validation gate
+        run: bash scripts/ci.sh
 
   secret_scan:
     name: Secret scan
@@ -54,10 +36,8 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Scan secrets with Gitleaks
-        uses: gitleaks/gitleaks-action@v3
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-          GITLEAKS_ENABLE_COMMENTS: "false"
-          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "false"
-          GITLEAKS_ENABLE_SUMMARY: "false"
+      - name: Scan complete Git history with pinned Gitleaks
+        run: bash scripts/scan-secrets.sh
+
+      - name: Verify scanner behavior with temporary Git histories
+        run: bash tests/test_secret_scan.sh
