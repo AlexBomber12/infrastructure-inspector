@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Build and test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Validate Docker Compose
+        run: docker compose --env-file .env.example -f compose.yaml config --quiet
+
+      - name: Build Inspector
+        run: docker build -f inspector/Dockerfile -t infrastructure-inspector:ci inspector
+
+      - name: Run isolated tests
+        run: |
+          docker run --rm \
+            --network none \
+            --read-only \
+            --user 65533:65533 \
+            --cap-drop ALL \
+            --security-opt no-new-privileges:true \
+            --memory 256m \
+            --pids-limit 64 \
+            --mount "type=bind,src=$PWD/tests,dst=/opt/tests,readonly" \
+            --mount "type=bind,src=$PWD/host,dst=/opt/host,readonly" \
+            --entrypoint python \
+            infrastructure-inspector:ci \
+            -m unittest discover -s /opt/tests -v

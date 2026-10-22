@@ -1,0 +1,16 @@
+.env
+.env.*
+!.env.example
+secrets/
+*.key
+*.pem
+*.pre-ssh
+*.bak
+*.orig
+*.pyc
+__pycache__/
+.venv/
+.pytest_cache/
+.coverage
+dist/
+build/

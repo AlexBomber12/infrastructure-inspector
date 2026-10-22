@@ -1,0 +1,77 @@
+name: infrastructure-inspector
+
+services:
+  inspector:
+    build:
+      context: ./inspector
+    image: infrastructure-inspector:0.2.0
+    user: "65533:65533"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 64
+    mem_limit: 256m
+    cpus: 0.5
+    restart: unless-stopped
+    environment:
+      INSPECTOR_SSH_TARGET: ${INSPECTOR_SSH_TARGET:?Required}
+      INSPECTOR_HOST_LABEL: ${INSPECTOR_HOST_LABEL:?Required}
+    volumes:
+      - type: bind
+        source: ${INSPECTOR_SSH_KEY_PATH:?Required}
+        target: /run/secrets/sg-audit-ed25519
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${INSPECTOR_KNOWN_HOSTS_PATH:?Required}
+        target: /run/secrets/ssh-known-hosts
+        read_only: true
+        bind:
+          create_host_path: false
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m
+    networks:
+      - mcp-private
+
+  tunnel-client:
+    image: ghcr.io/openai/tunnel-client@sha256:67b473b4bc23bc984e4a381752e9a2fa75649746edc06e46b27025611835c5c0
+    user: "65532:65532"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 64
+    mem_limit: 256m
+    cpus: 0.5
+    restart: unless-stopped
+    depends_on:
+      - inspector
+    command:
+      - --control-plane.tunnel-id=${OPENAI_TUNNEL_ID:?Required}
+      - --control-plane.api-key=file:/run/secrets/control-plane-api-key
+      - --mcp.server-url=http://inspector:8000/mcp
+      - --health.listen-addr=127.0.0.1:8080
+    volumes:
+      - type: bind
+        source: ${OPENAI_TUNNEL_API_KEY_PATH:?Required}
+        target: /run/secrets/control-plane-api-key
+        read_only: true
+        bind:
+          create_host_path: false
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m
+    networks:
+      - control-plane
+      - mcp-private
+
+networks:
+  control-plane:
+    driver: bridge
+
+  mcp-private:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: ${INSPECTOR_DOCKER_SUBNET:?Required}
+          gateway: ${INSPECTOR_DOCKER_GATEWAY:?Required}
