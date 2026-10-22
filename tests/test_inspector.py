@@ -2,8 +2,10 @@ import asyncio
 import importlib.util
 import io
 import os
+import runpy
 import subprocess
 import sys
+import tempfile
 import unittest
 from types import SimpleNamespace
 from pathlib import Path
@@ -205,8 +207,151 @@ class InspectorTests(unittest.TestCase):
                         timeout=0.1, stdout_limit=1024, stderr_limit=128,
                         env=dict(os.environ))
 
+    def test_bounded_deadline_after_read_and_os_error_cleanup(self):
+        class EmptySelector:
+            def __init__(self):
+                self.calls = 0
+
+            def register(self, *_):
+                pass
+
+            def get_map(self):
+                self.calls += 1
+                return self.calls == 1
+
+            def select(self, _):
+                return []
+
+            def close(self):
+                pass
+
+        command = [sys.executable, "-c", "import time;time.sleep(30)"]
+        with patch("bounded.selectors.DefaultSelector", EmptySelector), \
+             patch("bounded.time.monotonic", side_effect=[0, 0, 10]):
+            with self.assertRaises(subprocess.TimeoutExpired):
+                run_bounded(command, timeout=1, stdout_limit=1, stderr_limit=1,
+                            env=dict(os.environ))
+        with patch("bounded.os.set_blocking", side_effect=OSError("read error")):
+            with self.assertRaises(OSError):
+                run_bounded(command, timeout=1, stdout_limit=1, stderr_limit=1,
+                            env=dict(os.environ))
+
+    def test_bounded_exact_limits_and_child_termination(self):
+        for stdout_size, stderr_size, expected_stdout, expected_stderr in (
+            (16, 16, False, False),
+            (17, 0, True, False),
+            (0, 17, False, True),
+        ):
+            with self.subTest(stdout_size=stdout_size):
+                result = run_bounded(
+                    [sys.executable, "-c",
+                     f"import sys;sys.stderr.write('e'*{stderr_size});"
+                     f"sys.stdout.write('x'*{stdout_size})"],
+                    timeout=2, stdout_limit=16, stderr_limit=16,
+                    env=dict(os.environ),
+                )
+                self.assertEqual(len(result.stdout), min(stdout_size, 16))
+                self.assertEqual(len(result.stderr), min(stderr_size, 16))
+                self.assertIs(result.truncated, expected_stdout)
+                self.assertIs(result.stderr_truncated, expected_stderr)
+        with tempfile.TemporaryDirectory() as directory:
+            pid_file = Path(directory) / "pid"
+            command = [sys.executable, "-c",
+                       "import os, pathlib, sys, time;"
+                       f"pathlib.Path({str(pid_file)!r}).write_text(str(os.getpid()));"
+                       "sys.stdout.write('x'*50000);sys.stdout.flush();time.sleep(30)"]
+            result = run_bounded(command, timeout=2, stdout_limit=16,
+                                 stderr_limit=16, env=dict(os.environ))
+            self.assertTrue(result.truncated)
+            with self.assertRaises(ProcessLookupError):
+                os.kill(int(pid_file.read_text()), 0)
+
+    def test_server_entry_point(self):
+        with patch.object(server.MCPServer, "run") as run:
+            runpy.run_path(str(Path(server.__file__)), run_name="__main__")
+        self.assertEqual(run.call_args.kwargs["transport"], "streamable-http")
+        self.assertTrue(run.call_args.kwargs["stateless_http"])
+
 
 class DispatcherTests(unittest.TestCase):
+    def test_execution_deadlines_and_os_error_cleanup(self):
+        class EmptySelector:
+            def __init__(self):
+                self.calls = 0
+
+            def register(self, *_):
+                pass
+
+            def get_map(self):
+                self.calls += 1
+                return self.calls == 1
+
+            def select(self, _):
+                return []
+
+            def close(self):
+                pass
+
+        command = [sys.executable, "-c", "import time;time.sleep(30)"]
+        with patch.object(dispatcher.selectors, "DefaultSelector", EmptySelector), \
+             patch.object(dispatcher.time, "monotonic", side_effect=[0, 0, 11]):
+            with self.assertRaises(subprocess.TimeoutExpired):
+                dispatcher.execute(command)
+        with patch.object(dispatcher.time, "monotonic", side_effect=[0, 11]):
+            with self.assertRaises(subprocess.TimeoutExpired):
+                dispatcher.execute(command)
+        with patch.object(dispatcher.os, "set_blocking", side_effect=OSError("read error")):
+            with self.assertRaises(OSError):
+                dispatcher.execute(command)
+
+    def test_exact_dispatcher_output_limit_and_child_termination(self):
+        exact = dispatcher.execute([sys.executable, "-c",
+                                    f"import sys;sys.stdout.write('x'*{dispatcher.OUTPUT_LIMIT});"
+                                    f"sys.stderr.write('e'*{dispatcher.ERROR_LIMIT})"])
+        self.assertEqual(len(exact[1]), dispatcher.OUTPUT_LIMIT)
+        self.assertEqual(len(exact[2]), dispatcher.ERROR_LIMIT)
+        self.assertFalse(exact[3])
+        self.assertFalse(exact[4])
+        with tempfile.TemporaryDirectory() as directory:
+            pid_file = Path(directory) / "pid"
+            command = [sys.executable, "-c",
+                       "import os, pathlib, sys, time;"
+                       f"pathlib.Path({str(pid_file)!r}).write_text(str(os.getpid()));"
+                       f"sys.stdout.write('x'*{dispatcher.OUTPUT_LIMIT + 1});"
+                       "sys.stdout.flush();time.sleep(30)"]
+            result = dispatcher.execute(command)
+            self.assertTrue(result[3])
+            with self.assertRaises(ProcessLookupError):
+                os.kill(int(pid_file.read_text()), 0)
+
+    def test_main_rejections_and_process_errors(self):
+        with patch.dict(os.environ, {"SSH_ORIGINAL_COMMAND": "unsupported"}):
+            with patch.object(dispatcher.sys, "stderr", io.StringIO()) as stderr:
+                self.assertEqual(dispatcher.main(), 126)
+                self.assertIn("DENIED", stderr.getvalue())
+        with patch.dict(os.environ, {"SSH_ORIGINAL_COMMAND": "identity"}):
+            for error, code, message in (
+                (subprocess.TimeoutExpired("id", 1), 124, "timeout"),
+                (OSError("private path"), 127, "could not start"),
+            ):
+                with patch.object(dispatcher, "execute", side_effect=error), \
+                     patch.object(dispatcher.sys, "stderr", io.StringIO()) as stderr:
+                    self.assertEqual(dispatcher.main(), code)
+                    self.assertIn(message, stderr.getvalue())
+                    self.assertNotIn("private path", stderr.getvalue())
+            with patch.object(dispatcher, "execute", return_value=(3, b"out", b"error", False, False)), \
+                 patch.object(dispatcher.sys, "stdout", SimpleNamespace(buffer=io.BytesIO())), \
+                 patch.object(dispatcher.sys, "stderr", SimpleNamespace(buffer=io.BytesIO())) as stderr:
+                self.assertEqual(dispatcher.main(), 3)
+                self.assertEqual(stderr.buffer.getvalue(), b"error")
+
+    def test_dispatcher_entry_point(self):
+        with patch.dict(os.environ, {"SSH_ORIGINAL_COMMAND": "invalid"}), \
+             patch.object(sys, "stderr", io.StringIO()):
+            with self.assertRaises(SystemExit) as exited:
+                runpy.run_path(str(DISPATCHER_PATH), run_name="__main__")
+        self.assertEqual(exited.exception.code, 126)
+
     def test_complete_independent_fixed_allowlist(self):
         expected = dict(EXPECTED_COMMANDS)
         expected.update({legacy: EXPECTED_COMMANDS[check_id]

@@ -24,5 +24,5 @@ This repository uses a manual VS Code / Codex Review workflow. A task is one coh
 - The server-side SSH dispatcher must independently authorize every diagnostic operation. Inspector must not access the Docker socket.
 - Never commit real secrets, tokens, private keys, private inventory, or infrastructure-specific configuration to this public repository or its tests and logs. Ordinary tests need no production credentials.
 - Do not disable, bypass, or weaken CI, tests, or security controls. Avoid unnecessary complexity.
-- All substantive Python changes need regression tests. Measure production Python line and branch coverage, identify gaps, and work toward 100%; 100% coverage is a goal, not an enforced current gate.
+- All substantive Python changes need regression tests. Every PR must pass the enforced 100% line and branch coverage gate for all first-party production Python modules. Do not exclude live code from coverage to satisfy this gate.
 - Do not commit to or force-push `main`. Human authorization is required to merge.
