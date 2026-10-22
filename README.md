@@ -96,17 +96,41 @@ The example contains placeholders. Deployment requires a dedicated SSH account, 
 
 Never commit credentials, private keys, API keys or private infrastructure configuration.
 
-Run the local validation gate using `bash scripts/ci.sh`. It validates Compose,
-builds the Inspector image, runs the isolated unit tests, and checks the complete
-Git history for secrets with a tested, version-pinned scanner.
+Run the complete local validation gate with `bash scripts/ci.sh`. WSL development
+requires a working Docker Engine with Compose, `ssh-keygen`, and network access to
+pull the pinned base images and Python packages. The gate validates Compose,
+builds the Inspector and test images, runs unit and MCP transport tests, runs a
+disposable SSH stack, and checks Git history and pending files with pinned
+Gitleaks. No production credentials or hosts are needed.
 
 ## Tests
 
-GitHub Actions validates Compose, builds the Inspector image and runs isolated unit tests without SSH credentials or network access.
+GitHub Actions has separate **Unit & integration**, **E2E SSH**, and **Secret
+scan** jobs. `scripts/ci.sh` invokes the same test scripts locally. A missing
+Docker daemon, failed startup, skipped mandatory test, or missing coverage data
+fails the gate.
 
-Contributions follow the manual PR and review workflow in `AGENTS.md`. Production
-Python coverage should be measured for both lines and branches as the test suite
-grows toward 100%; this is not yet a CI threshold.
+The unit layer executes the production Python modules and covers normal and error
+paths, subprocess limits, and dispatcher authorization. The protocol layer uses
+the MCP SDK client over real Streamable HTTP against a disposable Inspector with
+a controlled SSH execution fixture. Coverage.py measures all first-party
+production Python files in `inspector/` and `host/`, including branch arcs;
+pytest-cov prints missing lines and branches and fails below 100%. Test files
+are outside the coverage source paths.
+
+The E2E layer starts actual Inspector, OpenSSH, and MCP client containers on an
+internal Docker network with no published ports. It generates temporary SSH
+keys and pinned `known_hosts`, and uses this repository's real ForceCommand
+dispatcher. It tests legacy and catalog operations, batching, unauthorized
+commands, bad authentication, host-key mismatch, injection, and an unavailable
+SSH server. Inspector runs as a non-root user without capabilities, a writable
+root filesystem, or a Docker socket. Fixture credentials are deleted afterward.
+
+These tests establish the behavior of the disposable stack. They do not verify
+the OpenAI Tunnel or a production host's SSH configuration, installed commands,
+network policy, or credentials. A production smoke test, if requested, requires
+explicit authorization, uses only read-only operations, and runs separately
+from normal CI. It must not upload credentials or host output to public reports.
 
 Unit tests do not replace integration testing of SSH restrictions on the target host.
 
@@ -114,7 +138,8 @@ To add a read-only check, add its fixed ID and metadata to
 `inspector/catalog.py`, then separately authorize that exact ID with fixed
 executable path and arguments in `host/sg-audit-dispatch.py`. Keep both maps
 consistent, add tests for the command and rejection of parameters, and run
-`bash scripts/ci.sh`. Deploying new diagnostic capability to production is
+`bash scripts/ci.sh`. Add unit tests for the new paths, protocol coverage for
+the published contract, and a disposable SSH E2E assertion. Deploying new diagnostic capability to production is
 a separate decision and is not part of adding it to this repository.
 
 ## Roadmap

@@ -9,35 +9,44 @@ permissions:
   contents: read
 
 jobs:
-  test:
-    name: Build and test
+  unit_integration:
+    name: Unit & integration
     runs-on: ubuntu-24.04
     timeout-minutes: 20
-
     steps:
       - name: Checkout
         uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
+      - name: Run unit, protocol and coverage gate
+        run: bash scripts/unit-integration.sh
 
-      - name: Run local validation gate
-        run: bash scripts/ci.sh
+  e2e_ssh:
+    name: E2E SSH
+    needs: unit_integration
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Run disposable SSH stack
+        run: bash scripts/e2e.sh
 
   secret_scan:
     name: Secret scan
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-
     steps:
       - name: Checkout full history
         uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
-
       - name: Scan complete Git history with pinned Gitleaks
         run: bash scripts/scan-secrets.sh
-
       - name: Verify scanner behavior with temporary Git histories
         run: bash tests/test_secret_scan.sh
