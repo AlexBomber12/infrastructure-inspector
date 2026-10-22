@@ -13,6 +13,7 @@ class Captured:
     stdout: bytes
     stderr: bytes
     truncated: bool
+    stderr_truncated: bool = False
 
 
 def run_bounded(command, *, timeout, stdout_limit, stderr_limit, env):
@@ -24,6 +25,7 @@ def run_bounded(command, *, timeout, stdout_limit, stderr_limit, env):
     limits = {process.stdout: stdout_limit, process.stderr: stderr_limit}
     deadline = time.monotonic() + timeout
     truncated = False
+    stderr_truncated = False
     selector = selectors.DefaultSelector()
     try:
         for stream in output:
@@ -42,8 +44,10 @@ def run_bounded(command, *, timeout, stdout_limit, stderr_limit, env):
                 room = limits[stream] - len(output[stream])
                 output[stream].extend(chunk[:max(room, 0)])
                 if len(chunk) > room:
-                    truncated = True
-                    break
+                    if stream is process.stdout:
+                        truncated = True
+                        break
+                    stderr_truncated = True
             if truncated:
                 break
         remaining = deadline - time.monotonic()
@@ -53,7 +57,7 @@ def run_bounded(command, *, timeout, stdout_limit, stderr_limit, env):
             process.kill()
         returncode = process.wait(timeout=remaining)
         return Captured(returncode, bytes(output[process.stdout]),
-                        bytes(output[process.stderr]), truncated)
+                        bytes(output[process.stderr]), truncated, stderr_truncated)
     except (subprocess.TimeoutExpired, OSError):
         process.kill()
         process.wait()

@@ -43,6 +43,7 @@ def execute(command):
     limits = {process.stdout: OUTPUT_LIMIT, process.stderr: ERROR_LIMIT}
     deadline = time.monotonic() + TIMEOUT
     truncated = False
+    stderr_truncated = False
     selector = selectors.DefaultSelector()
     try:
         for stream in buffers:
@@ -61,8 +62,10 @@ def execute(command):
                 room = limits[stream] - len(buffers[stream])
                 buffers[stream].extend(chunk[:max(room, 0)])
                 if len(chunk) > room:
-                    truncated = True
-                    break
+                    if stream is process.stdout:
+                        truncated = True
+                        break
+                    stderr_truncated = True
             if truncated:
                 break
         remaining = deadline - time.monotonic()
@@ -71,7 +74,8 @@ def execute(command):
         if truncated:
             process.kill()
         returncode = process.wait(timeout=remaining)
-        return returncode, bytes(buffers[process.stdout]), bytes(buffers[process.stderr]), truncated
+        return (returncode, bytes(buffers[process.stdout]),
+                bytes(buffers[process.stderr]), truncated, stderr_truncated)
     except (subprocess.TimeoutExpired, OSError):
         process.kill()
         process.wait()
@@ -88,7 +92,7 @@ def main():
         print("DENIED: command not allowed", file=sys.stderr)
         return 126
     try:
-        returncode, stdout, stderr, truncated = execute(COMMANDS[request])
+        returncode, stdout, stderr, truncated, stderr_truncated = execute(COMMANDS[request])
     except subprocess.TimeoutExpired:
         print("ERROR: timeout", file=sys.stderr)
         return 124
@@ -100,7 +104,11 @@ def main():
         sys.stderr.buffer.write(b"ERROR: diagnostic output truncated\n")
         sys.stderr.buffer.write(stderr[:ERROR_LIMIT - 35])
         return 125
-    sys.stderr.buffer.write(stderr)
+    if stderr_truncated:
+        marker = b"\nERROR: diagnostic stderr truncated\n"
+        sys.stderr.buffer.write(stderr[:ERROR_LIMIT - len(marker)] + marker)
+    else:
+        sys.stderr.buffer.write(stderr)
     return returncode
 
 

@@ -39,8 +39,10 @@ legacy MCP tools and SSH operation strings remain available.
 
 Each `inspect` result contains `host`, `check_id`, `collected_at` (UTC ISO
 8601), `status` (`success`, `error`, or `incomplete`), `exit_code` (or null),
-`output`, `truncated`, and `error` (or null). `incomplete` means output was
-truncated. Output is limited to 16,384 bytes and error information to 1,024
+`output`, `truncated`, `stderr_truncated`, and `error` (or null).
+`incomplete` means diagnostic stdout was truncated; `stderr_truncated`
+indicates separately that some error or warning text was dropped. Output is
+limited to 16,384 bytes and error information to 1,024
 characters; each SSH request has a 15-second deadline. A batch retains
 individual results when another check fails and can take up to 75 seconds.
 

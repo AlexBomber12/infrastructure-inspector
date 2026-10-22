@@ -78,6 +78,7 @@ class InspectorTests(unittest.TestCase):
                     self.assertEqual(result["exit_code"], 0)
                     self.assertEqual(result["output"], "ok\n")
                     self.assertIs(result["truncated"], False)
+                    self.assertIs(result["stderr_truncated"], False)
                     self.assertIsNone(result["error"])
                     self.assertTrue(result["collected_at"].endswith("+00:00"))
 
@@ -121,15 +122,26 @@ class InspectorTests(unittest.TestCase):
                 (Captured(125, b"x", b"ERROR: diagnostic output truncated\n", False),
                  "incomplete", True),
                 (Captured(125, b"", b"ordinary exit 125", False), "error", False),
+                (Captured(7, b"detail", b"e" * 1024, False, True), "error", False),
+                (Captured(0, b"complete", b"WARNING\nERROR: diagnostic stderr truncated\n",
+                          False), "success", False),
             ]
             for captured, status, truncated in cases:
                 with patch.object(server, "run_bounded", return_value=captured):
                     result = server.inspect("system.os")
                     self.assertEqual(result["status"], status)
                     self.assertIs(result["truncated"], truncated)
-                    self.assertLessEqual(len(result["error"]), 1024)
-                    self.assertNotIn("\x1b", result["error"])
-                    self.assertNotIn("\x00", result["error"])
+                    if result["error"] is not None:
+                        self.assertLessEqual(len(result["error"]), 1024)
+                        self.assertNotIn("\x1b", result["error"])
+                        self.assertNotIn("\x00", result["error"])
+                    if captured.stderr_truncated:
+                        self.assertTrue(result["stderr_truncated"])
+                        self.assertIn("stderr truncated", result["error"])
+                        self.assertEqual(result["exit_code"], 7)
+                    if b"diagnostic stderr truncated" in captured.stderr:
+                        self.assertTrue(result["stderr_truncated"])
+                        self.assertEqual(result["output"], "complete")
 
     def test_batch_validation_and_partial_failure(self):
         with patch.object(server, "run_bounded") as run:
@@ -178,6 +190,16 @@ class InspectorTests(unittest.TestCase):
                              stderr_limit=128, env=dict(os.environ))
         self.assertTrue(result.truncated)
         self.assertEqual(len(result.stdout), 1024)
+        noisy = run_bounded(
+            [sys.executable, "-c",
+             "import sys;sys.stderr.write('e'*50000);sys.stdout.write('ok');sys.exit(7)"],
+            timeout=2, stdout_limit=1024, stderr_limit=128, env=dict(os.environ),
+        )
+        self.assertEqual(noisy.returncode, 7)
+        self.assertEqual(noisy.stdout, b"ok")
+        self.assertFalse(noisy.truncated)
+        self.assertTrue(noisy.stderr_truncated)
+        self.assertEqual(len(noisy.stderr), 128)
         with self.assertRaises(subprocess.TimeoutExpired):
             run_bounded([sys.executable, "-c", "import time;time.sleep(2)"],
                         timeout=0.1, stdout_limit=1024, stderr_limit=128,
@@ -197,7 +219,7 @@ class DispatcherTests(unittest.TestCase):
         for operation, argv in dispatcher.COMMANDS.items():
             with self.subTest(operation=operation):
                 with patch.dict(os.environ, {"SSH_ORIGINAL_COMMAND": operation}):
-                    with patch.object(dispatcher, "execute", return_value=(0, b"", b"", False)) as run:
+                    with patch.object(dispatcher, "execute", return_value=(0, b"", b"", False, False)) as run:
                         self.assertEqual(dispatcher.main(), 0)
                         run.assert_called_once_with(argv)
 
@@ -234,6 +256,23 @@ class DispatcherTests(unittest.TestCase):
                     with patch.object(dispatcher.sys, "stderr", SimpleNamespace(buffer=io.BytesIO())) as stderr:
                         self.assertEqual(dispatcher.main(), 125)
                         self.assertIn(b"output truncated", stderr.buffer.getvalue())
+
+    def test_dispatcher_stderr_overflow_preserves_exit_and_stdout(self):
+        result = dispatcher.execute([
+            sys.executable, "-c",
+            "import sys;sys.stderr.write('e'*50000);sys.stdout.write('ok');sys.exit(7)",
+        ])
+        self.assertEqual(result[0], 7)
+        self.assertEqual(result[1], b"ok")
+        self.assertFalse(result[3])
+        self.assertTrue(result[4])
+        with patch.dict(os.environ, {"SSH_ORIGINAL_COMMAND": "system.os"}):
+            with patch.object(dispatcher, "execute", return_value=result):
+                with patch.object(dispatcher.sys, "stdout", SimpleNamespace(buffer=io.BytesIO())) as stdout:
+                    with patch.object(dispatcher.sys, "stderr", SimpleNamespace(buffer=io.BytesIO())) as stderr:
+                        self.assertEqual(dispatcher.main(), 7)
+                        self.assertEqual(stdout.buffer.getvalue(), b"ok")
+                        self.assertIn(b"stderr truncated", stderr.buffer.getvalue())
 
 
 if __name__ == "__main__":

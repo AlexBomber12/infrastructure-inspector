@@ -51,6 +51,7 @@ def _run_check(check_id, operation):
         "exit_code": None,
         "output": "",
         "truncated": False,
+        "stderr_truncated": False,
         "error": None,
     }
     if not SSH_TARGET:
@@ -71,6 +72,12 @@ def _run_check(check_id, operation):
     result["exit_code"] = captured.returncode
     result["output"] = captured.stdout.decode("utf-8", errors="replace")
     error = _safe_error(captured.stderr.decode("utf-8", errors="replace"))
+    result["stderr_truncated"] = (
+        captured.stderr_truncated or "ERROR: diagnostic stderr truncated" in error
+    )
+    if captured.stderr_truncated:
+        marker = " [SSH stderr truncated]"
+        error = error[:ERROR_LIMIT - len(marker)] + marker
     result["truncated"] = captured.truncated or (
         captured.returncode == 125
         and error.startswith("ERROR: diagnostic output truncated")
