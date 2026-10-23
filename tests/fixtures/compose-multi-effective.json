@@ -17,8 +17,7 @@
           }
         ]
       },
-      "internal": true,
-      "enable_ipv6": false
+      "internal": true
     },
     "ssh-egress": {
       "name": "infrastructure-inspector_ssh-egress",

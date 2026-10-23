@@ -41,6 +41,7 @@ import sys
 single, multi = (json.load(open(path, encoding="utf-8")) for path in sys.argv[1:])
 assert single["name"] == multi["name"] == "fixture-running-project"
 assert single["services"]["tunnel-client"] == multi["services"]["tunnel-client"]
+assert single["networks"]["mcp-private"] == multi["networks"]["mcp-private"]
 inspector = multi["services"]["inspector"]
 assert inspector["image"].startswith("sha256:")
 assert len(inspector["image"]) == 71

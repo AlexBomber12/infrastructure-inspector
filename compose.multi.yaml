@@ -73,7 +73,6 @@ networks:
   mcp-private:
     driver: bridge
     internal: true
-    enable_ipv6: false
     ipam:
       config:
         - subnet: ${INSPECTOR_DOCKER_SUBNET:?Required}

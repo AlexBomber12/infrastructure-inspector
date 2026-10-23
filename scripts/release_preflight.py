@@ -239,8 +239,8 @@ MULTI_SECRET_TARGETS = {
 def validate_multi_networks(config):
     networks = config["networks"]
     egress = networks["ssh-egress"]
-    require(egress.get("enable_ipv6") is False and networks["mcp-private"].get("enable_ipv6") is False,
-            "Inspector networks must disable IPv6")
+    require(egress.get("enable_ipv6") is False,
+            "Egress network must disable IPv6")
     require(egress.get("driver_opts", {}).get("com.docker.network.bridge.enable_icc") == "false",
             "Egress inter-container communication must be disabled")
     bridge = egress.get("driver_opts", {}).get("com.docker.network.bridge.name", "")
