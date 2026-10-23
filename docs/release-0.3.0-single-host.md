@@ -50,6 +50,10 @@ copy of the intended dispatcher, run this local-only preflight. It invokes
 `docker compose config`, inspects the local image, and runs an isolated Python
 probe with `--network none`; it does not read secret contents, connect to SSH,
 restart containers, or modify the host. A failed check stops the upgrade.
+It compares the effective deployment Compose runtime settings with the approved
+single-host Compose file in the clean release commit. Operator-specific paths,
+SSH target and label, Tunnel ID, Compose project location, and private subnet
+and gateway may differ; missing service wiring or weaker isolation fails.
 
 ```sh
 python3 scripts/release_preflight.py \

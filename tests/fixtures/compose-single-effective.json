@@ -1,0 +1,116 @@
+{
+  "name": "fixture-project",
+  "networks": {
+    "control-plane": {
+      "name": "fixture-network",
+      "driver": "bridge",
+      "ipam": {}
+    },
+    "mcp-private": {
+      "name": "fixture-network",
+      "driver": "bridge",
+      "ipam": {
+        "config": [
+          {
+            "subnet": "172.30.240.0/24",
+            "gateway": "172.30.240.1"
+          }
+        ]
+      },
+      "internal": true
+    }
+  },
+  "services": {
+    "inspector": {
+      "build": {
+        "context": "/fixture/project/inspector",
+        "dockerfile": "Dockerfile"
+      },
+      "cap_drop": [
+        "ALL"
+      ],
+      "cpus": 0.5,
+      "command": null,
+      "entrypoint": null,
+      "environment": {
+        "INSPECTOR_HOST_LABEL": "example-host",
+        "INSPECTOR_SSH_TARGET": "inspector@172.30.240.1"
+      },
+      "image": "infrastructure-inspector:0.3.0",
+      "mem_limit": "268435456",
+      "networks": {
+        "mcp-private": null
+      },
+      "pids_limit": 64,
+      "read_only": true,
+      "restart": "unless-stopped",
+      "security_opt": [
+        "no-new-privileges:true"
+      ],
+      "tmpfs": [
+        "/tmp:rw,noexec,nosuid,nodev,size=16m"
+      ],
+      "user": "65533:65533",
+      "volumes": [
+        {
+          "type": "bind",
+          "source": "/fixture/sg-audit-ed25519",
+          "target": "/run/secrets/sg-audit-ed25519",
+          "read_only": true,
+          "bind": {}
+        },
+        {
+          "type": "bind",
+          "source": "/fixture/ssh-known-hosts",
+          "target": "/run/secrets/ssh-known-hosts",
+          "read_only": true,
+          "bind": {}
+        }
+      ]
+    },
+    "tunnel-client": {
+      "cap_drop": [
+        "ALL"
+      ],
+      "cpus": 0.5,
+      "command": [
+        "--control-plane.tunnel-id=tunnel_REPLACE_ME",
+        "--control-plane.api-key=file:/run/secrets/control-plane-api-key",
+        "--mcp.server-url=http://inspector:8000/mcp",
+        "--health.listen-addr=127.0.0.1:8080"
+      ],
+      "depends_on": {
+        "inspector": {
+          "condition": "service_started",
+          "required": true
+        }
+      },
+      "entrypoint": null,
+      "image": "ghcr.io/openai/tunnel-client@sha256:67b473b4bc23bc984e4a381752e9a2fa75649746edc06e46b27025611835c5c0",
+      "mem_limit": "268435456",
+      "networks": {
+        "control-plane": null,
+        "mcp-private": null
+      },
+      "pids_limit": 64,
+      "read_only": true,
+      "restart": "unless-stopped",
+      "security_opt": [
+        "no-new-privileges:true"
+      ],
+      "tmpfs": [
+        "/tmp:rw,noexec,nosuid,nodev,size=16m"
+      ],
+      "user": "65532:65532",
+      "volumes": [
+        {
+          "type": "bind",
+          "source": "/fixture/control-plane-api-key",
+          "target": "/run/secrets/control-plane-api-key",
+          "read_only": true,
+          "bind": {}
+        }
+      ]
+    }
+  }
+}

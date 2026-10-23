@@ -1,6 +1,7 @@
 """Hermetic validation of the operator's local release preflight."""
 
 import importlib.util
+import copy
 import json
 from pathlib import Path
 import runpy
@@ -19,22 +20,14 @@ spec.loader.exec_module(preflight)
 
 @pytest.fixture
 def config(tmp_path):
-    def mount(target):
-        source = tmp_path / target.rsplit("/", 1)[-1]
-        source.touch()
-        return {"type": "bind", "source": str(source), "target": target,
-                "read_only": True, "bind": {"create_host_path": False}}
-    return {"services": {
-        "inspector": {"image": preflight.IMAGE, "user": "65533:65533",
-                      "read_only": True, "cap_drop": ["ALL"],
-                      "security_opt": ["no-new-privileges:true"],
-                      "environment": {"INSPECTOR_SSH_TARGET": "audit@fixture"},
-                      "networks": {"mcp-private": None},
-                      "volumes": [mount("/run/secrets/sg-audit-ed25519"),
-                                  mount("/run/secrets/ssh-known-hosts")]},
-        "tunnel-client": {"read_only": True,
-                          "volumes": [mount("/run/secrets/control-plane-api-key")]},
-    }, "networks": {"mcp-private": {"internal": True}}}
+    config = json.loads((Path(__file__).with_name("fixtures") /
+                         "compose-single-effective.json").read_text())
+    for service in config["services"].values():
+        for mount in service.get("volumes", []):
+            source = tmp_path / mount["target"].rsplit("/", 1)[-1]
+            source.touch()
+            mount["source"] = str(source)
+    return config
 
 
 def test_source_version_and_revision_mismatch():
@@ -87,7 +80,8 @@ def test_local_command_failure_does_not_expose_output():
 
 
 def test_single_host_compose_contract_and_invalid_release_config(config):
-    preflight.validate_compose(config)
+    approved = copy.deepcopy(config)
+    preflight.validate_compose(config, approved)
     inspector = config["services"]["inspector"]
     for field, value in (("image", "infrastructure-inspector:0.2.0"),
                          ("user", "0:0"), ("read_only", False),
@@ -97,40 +91,141 @@ def test_single_host_compose_contract_and_invalid_release_config(config):
         old = inspector.get(field)
         inspector[field] = value
         with pytest.raises(ValueError):
-            preflight.validate_compose(config)
+            preflight.validate_compose(config, approved)
         if old is None:
             del inspector[field]
         else:
             inspector[field] = old
     inspector["environment"]["INSPECTOR_HOST_MODE"] = "multi"
-    with pytest.raises(ValueError, match="multi-host"):
-        preflight.validate_compose(config)
+    with pytest.raises(ValueError, match="environment changed"):
+        preflight.validate_compose(config, approved)
     del inspector["environment"]["INSPECTOR_HOST_MODE"]
     inspector["volumes"][0]["source"] = "/var/run/docker.sock"
     with pytest.raises(ValueError):
-        preflight.validate_compose(config)
+        preflight.validate_compose(config, approved)
 
 
 def test_secret_mount_must_exist_without_reading(config):
+    approved = copy.deepcopy(config)
     source = Path(config["services"]["inspector"]["volumes"][0]["source"])
     source.unlink()
     with pytest.raises(ValueError, match="secret file missing"):
-        preflight.validate_compose(config)
+        preflight.validate_compose(config, approved)
 
 
 def test_secret_mounts_must_belong_to_correct_service(config):
+    approved = copy.deepcopy(config)
     inspector = config["services"]["inspector"]
     tunnel = config["services"]["tunnel-client"]
     inspector["volumes"][0], tunnel["volumes"][0] = (
         tunnel["volumes"][0], inspector["volumes"][0])
     with pytest.raises(ValueError, match="mounts differ for inspector"):
-        preflight.validate_compose(config)
+        preflight.validate_compose(config, approved)
+
+
+@pytest.mark.parametrize("service,field,value", [
+    ("inspector", "command", ["sleep", "infinity"]),
+    ("inspector", "entrypoint", ["/bin/sh"]),
+    ("inspector", "volumes_from", ["tunnel-client"]),
+    ("inspector", "tmpfs", []),
+    ("inspector", "restart", "no"),
+    ("tunnel-client", "entrypoint", ["/bin/sh"]),
+    ("tunnel-client", "volumes_from", ["inspector"]),
+    ("tunnel-client", "user", "0:0"),
+    ("tunnel-client", "read_only", False),
+    ("tunnel-client", "cap_drop", []),
+    ("tunnel-client", "cap_add", ["SYS_ADMIN"]),
+    ("tunnel-client", "devices", ["/dev/sda"]),
+    ("tunnel-client", "security_opt", []),
+    ("tunnel-client", "ports", ["8000:8000"]),
+    ("tunnel-client", "network_mode", "host"),
+    ("tunnel-client", "image", "unverified:latest"),
+    ("tunnel-client", "depends_on", {}),
+])
+def test_runtime_service_drift_is_rejected(config, service, field, value):
+    approved = copy.deepcopy(config)
+    config["services"][service][field] = value
+    with pytest.raises(ValueError, match="contract differs|privileges changed"):
+        preflight.validate_compose(config, approved)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("INSPECTOR_SSH_TARGET", None),
+    ("INSPECTOR_SSH_TARGET", ""),
+    ("INSPECTOR_SSH_TARGET", "-oProxyCommand=id"),
+    ("INSPECTOR_SSH_TARGET", "audit@host;id"),
+    ("INSPECTOR_HOST_LABEL", None),
+    ("INSPECTOR_HOST_LABEL", "  "),
+])
+def test_required_inspector_configuration_is_rejected_when_unsafe(config, field, value):
+    approved = copy.deepcopy(config)
+    environment = config["services"]["inspector"]["environment"]
+    if value is None:
+        del environment[field]
+    else:
+        environment[field] = value
+    with pytest.raises(ValueError, match="environment changed|missing or unsafe|label is missing"):
+        preflight.validate_compose(config, approved)
+
+
+@pytest.mark.parametrize("index,value", [
+    (0, "--control-plane.tunnel-id="),
+    (1, "--control-plane.api-key=plain:token"),
+    (2, "--mcp.server-url=http://elsewhere:8000/mcp"),
+    (3, "--health.listen-addr=0.0.0.0:8080"),
+])
+def test_tunnel_command_drift_is_rejected(config, index, value):
+    approved = copy.deepcopy(config)
+    config["services"]["tunnel-client"]["command"][index] = value
+    with pytest.raises(ValueError, match="Tunnel ID|contract differs"):
+        preflight.validate_compose(config, approved)
+
+
+def test_network_membership_and_indirect_mounts_are_rejected(config):
+    approved = copy.deepcopy(config)
+    tunnel = config["services"]["tunnel-client"]
+    del tunnel["networks"]["mcp-private"]
+    with pytest.raises(ValueError, match="contract differs"):
+        preflight.validate_compose(config, approved)
+    tunnel["networks"]["mcp-private"] = None
+    config["services"]["inspector"]["volumes_from"] = ["tunnel-client"]
+    with pytest.raises(ValueError, match="contract differs"):
+        preflight.validate_compose(config, approved)
+
+
+def test_valid_operator_values_and_network_address_drift(config, tmp_path):
+    approved = copy.deepcopy(config)
+    config["name"] = "approved-pilot"
+    config["networks"]["control-plane"]["name"] = "pilot-control"
+    config["networks"]["mcp-private"]["name"] = "pilot-private"
+    config["networks"]["mcp-private"]["ipam"]["config"][0] = {
+        "subnet": "10.99.10.0/24", "gateway": "10.99.10.1"}
+    config["services"]["inspector"]["build"]["context"] = "/operator/release/inspector"
+    config["services"]["inspector"]["environment"] = {
+        "INSPECTOR_SSH_TARGET": "ssh://audit@example.com:2222",
+        "INSPECTOR_HOST_LABEL": "Pilot host",
+    }
+    config["services"]["tunnel-client"]["command"][0] = "--control-plane.tunnel-id=tunnel_fixture"
+    for service in config["services"].values():
+        for mount in service.get("volumes", []):
+            source = tmp_path / ("other-" + mount["target"].rsplit("/", 1)[-1])
+            source.touch()
+            mount["source"] = str(source)
+    preflight.validate_compose(config, approved)
+    config["networks"]["mcp-private"]["ipam"]["config"][0]["gateway"] = "10.98.10.1"
+    with pytest.raises(ValueError, match="gateway is outside"):
+        preflight.validate_compose(config, approved)
+    config["networks"]["mcp-private"]["ipam"]["config"][0]["subnet"] = "invalid-subnet"
+    with pytest.raises(ValueError, match="Invalid private network"):
+        preflight.validate_compose(config, approved)
 
 
 def test_image_identity_modules_and_ssh_restrictions():
     image_id = "sha256:" + "a" * 64
     revision = "b" * 40
-    metadata = {"Id": image_id, "Config": {"User": "65533:65533", "Labels": {
+    metadata = {"Id": image_id, "Config": {"User": "65533:65533",
+                                          "Cmd": ["python", "server.py"],
+                                          "Entrypoint": None, "Labels": {
         "org.opencontainers.image.version": "0.3.0",
         "org.opencontainers.image.revision": revision,
     }}}
@@ -148,6 +243,10 @@ def test_image_identity_modules_and_ssh_restrictions():
         with pytest.raises(ValueError, match="version label"):
             preflight.validate_image(metadata, image_id, probe)
         metadata["Config"]["Labels"]["org.opencontainers.image.version"] = "0.3.0"
+        metadata["Config"]["Cmd"] = ["sleep", "infinity"]
+        with pytest.raises(ValueError, match="startup command"):
+            preflight.validate_image(metadata, image_id, probe)
+        metadata["Config"]["Cmd"] = ["python", "server.py"]
         probe["command"].remove("StrictHostKeyChecking=yes")
         with pytest.raises(ValueError, match="SSH client restrictions"):
             preflight.validate_image(metadata, image_id, probe)
@@ -185,13 +284,15 @@ def test_cli_uses_exact_deployment_compose_file(tmp_path, capsys):
         preflight, "validate_image"
     ), patch.object(preflight, "validate_dispatcher"), patch.object(
         preflight, "run", side_effect=[json.dumps({"services": {}}),
+                                      json.dumps({"services": {"approved": True}}),
                                       json.dumps([metadata]), json.dumps({"modules": []})]
     ) as run:
         assert preflight.main() == 0
         assert run.call_args_list[0].args == (
             "docker", "compose", "--env-file", str(env_file), "-f",
             str(compose_file.resolve()), "config", "--format", "json")
-        validate_compose.assert_called_once_with({"services": {}})
+        validate_compose.assert_called_once_with(
+            {"services": {}}, {"services": {"approved": True}})
     assert "preflight passed" in capsys.readouterr().out
     compose_file.unlink()
     with patch.object(sys, "argv", args), patch.object(preflight, "validate_source"):
