@@ -34,6 +34,9 @@ render() {
 add table inet inspector_multi
 add chain inet inspector_multi input { type filter hook input priority -100; policy accept; }
 add chain inet inspector_multi forward { type filter hook forward priority -100; policy accept; }
+add chain inet inspector_multi output { type filter hook output priority -100; policy accept; }
+add rule inet inspector_multi output ip daddr 127.0.0.254 udp dport 53 drop
+add rule inet inspector_multi output ip daddr 127.0.0.254 tcp dport 53 drop
 add rule inet inspector_multi input iifname "br-*" ether saddr $private_mac ip saddr $private_ip ip daddr $private_gateway tcp dport 22 accept
 add rule inet inspector_multi input iifname "br-*" ether saddr $private_mac drop
 add rule inet inspector_multi input iifname "$egress_bridge" drop

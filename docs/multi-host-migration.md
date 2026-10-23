@@ -24,7 +24,10 @@ multi-host mode, so it cannot start by itself after a Docker restart before
 the operator verifies the policy.
 
 The `inspector_multi` nftables table is independent of Docker's iptables-nft
-tables. Its `input` hook permits only the private bridge gateway on TCP 22 and
+tables. Inspector alone uses a loopback DNS sink; the table's host `output`
+hook blocks UDP and TCP port 53 to that sink, including Docker's upstream
+forwarding outside the bridge hooks. The Tunnel keeps its internal service
+discovery. The table's `input` hook permits only the private bridge gateway on TCP 22 and
 rejects other host-local destinations from Inspector's private MAC. It
 rejects all host-local traffic from the dedicated egress bridge. Its `forward`
 hook rejects private-network egress and permits egress-network SSH only to the
@@ -72,7 +75,7 @@ packet tests before Inspector is started.
 4. Run `scripts/release_preflight.py` with the intended `--compose-file`,
    `--env-file`, `--project-name`, `--revision`, `--deployment-revision`,
    `--image-id`, and `--snapshot`. It checks the effective Compose contract,
-   immutable image and source revision, current snapshot, Tunnel hash, registry
+   immutable image and source revision, Inspector DNS sink, current snapshot, Tunnel hash, registry
    schema and default ID, and actual mounted credential readability using
    constrained Docker probes. No credential contents are printed. A failed
    probe stops migration.
@@ -121,7 +124,9 @@ routes, and running state. Confirm the Tunnel ID and config hash remain equal
 to the snapshot. Run allowed read-only checks for both IDs, legacy
 `inspect_server`, a batch, and rejection cases. Use disposable probes to show
 packets to unapproved remote endpoints, host-local addresses and lateral
-containers are rejected. Verify the already configured `authorized_keys`
+containers are rejected. Verify Inspector cannot resolve external DNS names
+through Docker's embedded resolver while Tunnel-to-Inspector service discovery
+still works. Verify the already configured `authorized_keys`
 source restriction still sees the expected SERVER source after Docker NAT;
 the repository's synthetic NAT test does not establish this production fact.
 
@@ -149,15 +154,17 @@ The E2E path uses two independently keyed disposable OpenSSH targets and the
 real dispatcher. A separate privileged test container has no network
 attachment and creates its own network namespaces; it checks allowed and
 rejected packets, host-local processing, route changes, bridge recreation,
-IPv6, synthetic masquerading, and policy removal. These tests do not prove
+IPv6, DNS sink packet rejection, synthetic masquerading, and policy removal.
+A separate Docker-backed test exercises embedded DNS with a synthetic peer:
+peer discovery succeeds and external resolution fails. These tests do not prove
 the real host's nft persistence, Docker daemon restart behavior, actual route
 table, Docker NAT source, or Tunnel continuity during migration. Those require
 an operator-controlled staging run and production preflight before rollout.
 
 The policy depends on Inspector retaining its reserved private MAC and exactly
 the reviewed two attachments; verify both after recreation. The Docker networks
-also keep IPv6 disabled. A firewall flush while
-Inspector is running could expose it until the policy is restored. The
+also keep IPv6 disabled. A firewall flush while Inspector is running could
+expose it until the policy is restored. The
 controlled service lifecycle above must be demonstrated before treating the
 deployment as fail-closed. Do not claim complete isolation from repository
 tests alone.

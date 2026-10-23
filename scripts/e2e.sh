@@ -140,3 +140,4 @@ docker compose -p "$project" -f "$compose_file" run --rm -T client \
   pytest -q -p no:cacheprovider /opt/tests/test_e2e_client.py -k unavailable_ssh_server
 docker build -q -f tests/network.Dockerfile -t infrastructure-inspector-network-test:ci . >/dev/null
 docker run --rm --privileged --network none infrastructure-inspector-network-test:ci
+bash tests/test_docker_dns.sh

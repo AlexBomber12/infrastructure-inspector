@@ -42,6 +42,9 @@
       "cap_drop": [
         "ALL"
       ],
+      "dns": [
+        "127.0.0.254"
+      ],
       "cpus": 0.5,
       "command": null,
       "entrypoint": null,

@@ -183,6 +183,8 @@ def validate_compose(config, approved, expected_id):
     if multi:
         require(environment == {"INSPECTOR_HOST_MODE": "multi"},
                 "Multi-host Inspector environment changed")
+        require(inspector.get("dns") == ["127.0.0.254"],
+                "Inspector DNS sink changed")
         require(set(config["networks"]) == {"mcp-private", "ssh-egress", "control-plane"}
                 and set(inspector.get("networks", {})) == {"mcp-private", "ssh-egress"},
                 "Multi-host networks changed")

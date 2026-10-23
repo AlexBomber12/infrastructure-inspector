@@ -14,6 +14,7 @@ services:
     restart: "no"
     environment:
       INSPECTOR_HOST_MODE: multi
+    dns: [127.0.0.254]
     volumes:
       - type: bind
         source: ${INSPECTOR_HOST_REGISTRY_PATH:?Required}

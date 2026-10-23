@@ -9,6 +9,7 @@ egress_ip=10.240.2.2
 egress_gateway=10.240.2.1
 ai_ip=10.240.3.2
 bridge=br-test-eg
+ip link set lo up
 if bash "$policy" render 999.240.1.2 "$private_mac" "$private_gateway" "$egress_ip" "$bridge" "$ai_ip" >/dev/null 2>&1; then
   echo 'Invalid policy address was accepted' >&2; exit 1
 fi
@@ -65,6 +66,35 @@ trap 'kill "$host_server" "$host_alt_server" "$ai_server" "$bad_server" "$bad_po
 
 bash "$policy" install "$private_ip" "$private_mac" "$private_gateway" "$egress_ip" "$bridge" "$ai_ip"
 bash "$policy" verify "$private_ip" "$private_mac" "$private_gateway" "$egress_ip" "$bridge" "$ai_ip"
+nc -l -p 53 -s 127.0.0.254 >/dev/null & dns_tcp_server=$!
+if nc -z -w 1 127.0.0.254 53; then
+  echo 'Docker DNS sink accepted TCP traffic' >&2; exit 1
+fi
+python3 - <<'PY' &
+import socket
+server = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+server.bind(("127.0.0.254", 53))
+server.settimeout(1)
+try:
+    server.recvfrom(128)
+except socket.timeout:
+    pass
+else:
+    with open("/tmp/dns-received", "w", encoding="utf-8") as output:
+        output.write("yes")
+PY
+dns_udp_server=$!
+sleep 0.1
+python3 - <<'PY'
+import socket
+sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+try:
+    sender.sendto(b"query", ("127.0.0.254", 53))
+except PermissionError:
+    pass
+PY
+wait "$dns_udp_server"
+test ! -e /tmp/dns-received
 allow() { ip netns exec inspector nc -z -w 1 "$1" "$2"; }
 deny() { if allow "$1" "$2"; then echo "Unexpected access to $1:$2" >&2; exit 1; fi; }
 deny_source() { if ip netns exec inspector nc -z -w 1 -s "$1" "$2" "$3"; then echo "Source-spoofed access to $2:$3" >&2; exit 1; fi; }
@@ -118,5 +148,7 @@ if ip netns exec inspector ping -6 -c 1 -W 1 fd42:240:1::1 >/dev/null 2>&1; then
 fi
 bash "$policy" remove
 bash "$policy" remove
+nc -z -w 1 127.0.0.254 53
+wait "$dns_tcp_server"
 allow 10.240.3.3 22
 echo 'Disposable packet allow, deny, IPv6 and rollback checks passed'

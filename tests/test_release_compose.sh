@@ -47,6 +47,7 @@ assert inspector["image"].startswith("sha256:")
 assert len(inspector["image"]) == 71
 assert inspector["pull_policy"] == "never" and "build" not in inspector
 assert inspector["restart"] == "no"
+assert inspector["dns"] == ["127.0.0.254"]
 assert set(inspector["networks"]) == {"mcp-private", "ssh-egress"}
 assert set(multi["services"]["tunnel-client"]["networks"]) == {"mcp-private", "control-plane"}
 assert multi["networks"]["ssh-egress"]["enable_ipv6"] is False

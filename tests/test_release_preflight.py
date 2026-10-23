@@ -48,6 +48,10 @@ def test_multi_host_compose_contract(multi_config):
     with pytest.raises(ValueError, match="Multi-host Inspector environment"):
         preflight.validate_compose(multi_config, approved, image)
     inspector["environment"] = {"INSPECTOR_HOST_MODE": "multi"}
+    inspector["dns"] = ["8.8.8.8"]
+    with pytest.raises(ValueError, match="DNS sink"):
+        preflight.validate_compose(multi_config, approved, image)
+    inspector["dns"] = ["127.0.0.254"]
     inspector["networks"].pop("ssh-egress")
     with pytest.raises(ValueError, match="Multi-host networks"):
         preflight.validate_compose(multi_config, approved, image)
