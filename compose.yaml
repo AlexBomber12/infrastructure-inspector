@@ -4,7 +4,7 @@ services:
   inspector:
     build:
       context: ./inspector
-    image: infrastructure-inspector:0.2.0
+    image: infrastructure-inspector:0.3.0
     user: "65533:65533"
     read_only: true
     cap_drop: [ALL]

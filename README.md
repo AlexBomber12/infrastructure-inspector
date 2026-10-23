@@ -8,6 +8,11 @@ Infrastructure Inspector enables ChatGPT and other MCP clients to inspect Linux 
 
 Version: 0.3.0 (development branch; production remains 0.2.0)
 
+The single-host 0.3.0 release image is `infrastructure-inspector:0.3.0`.
+For a future authorized pilot, use the [release preflight and rollback
+runbook](docs/release-0.3.0-single-host.md). This source change does not deploy
+or replace the running 0.2.0 service.
+
 Production 0.2.0 provides MCP-to-SSH diagnostic transport. The checks below
 describe development capability and require a separate, explicit deployment.
 

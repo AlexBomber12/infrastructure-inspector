@@ -2,7 +2,7 @@
 set -euo pipefail
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
-docker build -f inspector/Dockerfile -t infrastructure-inspector:ci inspector
+docker build --build-arg SOURCE_REVISION="$(git rev-parse HEAD)" -f inspector/Dockerfile -t infrastructure-inspector:ci inspector
 docker build -f tests/Dockerfile -t infrastructure-inspector-test:ci .
 fixture="$(mktemp -d)"
 chmod 755 "$fixture"

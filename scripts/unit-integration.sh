@@ -5,7 +5,7 @@ cd "$repo_root"
 docker compose --env-file .env.example -f compose.yaml config --quiet
 docker compose --env-file .env.multi.example -f compose.multi.yaml config --quiet
 docker compose --env-file .env.multi.example -f compose.multi.yaml config --format json | python3 -c 'import json,sys; c=json.load(sys.stdin); assert set(c["services"]["inspector"]["networks"]) == {"mcp-private", "ssh-egress"}; assert c["networks"]["mcp-private"]["internal"] is True; assert not c["networks"]["ssh-egress"].get("internal", False)'
-docker build -f inspector/Dockerfile -t infrastructure-inspector:ci inspector
+docker build --build-arg SOURCE_REVISION="$(git rev-parse HEAD)" -f inspector/Dockerfile -t infrastructure-inspector:ci inspector
 docker build -f tests/Dockerfile -t infrastructure-inspector-test:ci .
 docker run --rm \
   --network none \
@@ -17,11 +17,12 @@ docker run --rm \
   --pids-limit 64 \
   --mount "type=bind,src=$repo_root/tests,dst=/opt/tests,readonly" \
   --mount "type=bind,src=$repo_root/host,dst=/opt/host,readonly" \
+  --mount "type=bind,src=$repo_root/scripts,dst=/opt/scripts,readonly" \
   --tmpfs /tmp:rw,noexec,nosuid,size=32m \
   --env PYTHONPATH=/opt/ssh-inspector \
   --env COVERAGE_FILE=/tmp/.coverage \
   --entrypoint pytest \
   infrastructure-inspector-test:ci \
-  -q -p no:cacheprovider /opt/tests/test_inspector.py /opt/tests/test_protocol.py \
+  -q -p no:cacheprovider /opt/tests/test_inspector.py /opt/tests/test_protocol.py /opt/tests/test_release_preflight.py \
   --cov=/opt/ssh-inspector --cov=/opt/host --cov-branch \
   --cov-report=term-missing --cov-fail-under=100
