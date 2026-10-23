@@ -30,18 +30,19 @@ def config(tmp_path):
 
 
 def test_revision_validation():
-    with patch.object(preflight, "run", return_value="") as run:
-        preflight.validate_revision("a" * 40)
-        assert run.call_args_list[0].args == (
-            "git", "merge-base", "--is-ancestor", "a" * 40, "HEAD")
-    with pytest.raises(ValueError, match="full commit"):
-        preflight.validate_revision("short")
-    with patch.object(preflight, "run", side_effect=ValueError("Local command failed: git merge-base")):
-        with pytest.raises(ValueError, match="merge-base"):
-            preflight.validate_revision("b" * 40)
-    with patch.object(preflight, "run", side_effect=["", "modified"]):
+    with patch.object(preflight, "run", side_effect=["b" * 40, ""]) as run:
+        preflight.validate_revisions("a" * 40, "b" * 40)
+        assert run.call_args_list[0].args == ("git", "rev-parse", "HEAD")
+    with pytest.raises(ValueError, match="image source revision"):
+        preflight.validate_revisions("short", "b" * 40)
+    with pytest.raises(ValueError, match="deployment revision"):
+        preflight.validate_revisions("a" * 40, "short")
+    with patch.object(preflight, "run", return_value="c" * 40):
+        with pytest.raises(ValueError, match="differs"):
+            preflight.validate_revisions("a" * 40, "b" * 40)
+    with patch.object(preflight, "run", side_effect=["b" * 40, "modified"]):
         with pytest.raises(ValueError, match="dirty"):
-            preflight.validate_revision("a" * 40)
+            preflight.validate_revisions("a" * 40, "b" * 40)
 
 
 def test_local_command_failure_does_not_expose_output():
@@ -257,10 +258,10 @@ def test_cli_uses_exact_deployment_compose_file(tmp_path, capsys):
     metadata = {"Id": image_id}
     args = ["release_preflight.py", "--revision", revision, "--image-id", image_id,
             "--env-file", str(env_file), "--compose-file", str(compose_file),
-            "--project-name", "running-project"]
+            "--project-name", "running-project", "--deployment-revision", "c" * 40]
     with patch.object(sys, "argv", args), patch.object(
-        preflight, "validate_revision"
-    ), patch.object(preflight, "validate_compose") as validate_compose, patch.object(
+        preflight, "validate_revisions"
+    ) as validate_revisions, patch.object(preflight, "validate_compose") as validate_compose, patch.object(
         preflight, "validate_image"
     ), patch.object(
         preflight, "run", side_effect=[json.dumps({"name": "running-project", "services": {}}),
@@ -268,6 +269,7 @@ def test_cli_uses_exact_deployment_compose_file(tmp_path, capsys):
                                       json.dumps([metadata]), json.dumps({"modules": []})]
     ) as run:
         assert preflight.main() == 0
+        validate_revisions.assert_called_once_with(revision, "c" * 40)
         assert run.call_args_list[0].args == (
             "docker", "compose", "--env-file", str(env_file), "-f",
             str(compose_file.resolve()), "-p", "running-project", "config", "--format", "json")
@@ -275,7 +277,7 @@ def test_cli_uses_exact_deployment_compose_file(tmp_path, capsys):
             {"name": "running-project", "services": {}}, {"services": {"approved": True}}, image_id)
     assert "preflight passed" in capsys.readouterr().out
     compose_file.unlink()
-    with patch.object(sys, "argv", args), patch.object(preflight, "validate_revision"):
+    with patch.object(sys, "argv", args), patch.object(preflight, "validate_revisions"):
         assert preflight.main() == 1
     assert "Deployment Compose file is missing" in capsys.readouterr().err
 
@@ -287,14 +289,15 @@ def test_cli_failure_is_reported_without_secret_contents(tmp_path, capsys):
         path.touch()
     args = ["release_preflight.py", "--revision", "a" * 40,
             "--image-id", "sha256:" + "b" * 64, "--env-file", str(env_file),
-            "--compose-file", str(compose_file), "--project-name", "running-project"]
+            "--compose-file", str(compose_file), "--project-name", "running-project",
+            "--deployment-revision", "c" * 40]
     with patch.object(sys, "argv", args), patch.object(
-        preflight, "validate_revision"
+        preflight, "validate_revisions"
     ), patch.object(preflight, "run", side_effect=ValueError("invalid Compose")):
         assert preflight.main() == 1
     assert "invalid Compose" in capsys.readouterr().err
     with patch.object(sys, "argv", args), patch.object(
-        preflight, "validate_revision"
+        preflight, "validate_revisions"
     ), patch.object(preflight, "run", return_value=json.dumps({"name": "wrong-project"})):
         assert preflight.main() == 1
     assert "project differs" in capsys.readouterr().err
@@ -305,7 +308,7 @@ def test_cli_failure_is_reported_without_secret_contents(tmp_path, capsys):
         run.assert_not_called()
     assert "Unset exported Compose" in capsys.readouterr().err
     with patch.object(sys, "argv", [*args[:4], "latest", *args[5:]]), patch.object(
-        preflight, "validate_revision"
+        preflight, "validate_revisions"
     ), patch.object(
         preflight, "run"
     ) as run:

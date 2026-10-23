@@ -50,10 +50,13 @@ def run(*args):
     return result.stdout.strip()
 
 
-def validate_revision(expected_revision):
-    require(re.fullmatch(r"[0-9a-f]{40}", expected_revision) is not None,
-            "Expected revision must be a full commit SHA")
-    run("git", "merge-base", "--is-ancestor", expected_revision, "HEAD")
+def validate_revisions(image_revision, deployment_revision):
+    require(re.fullmatch(r"[0-9a-f]{40}", image_revision) is not None,
+            "Expected image source revision must be a full commit SHA")
+    require(re.fullmatch(r"[0-9a-f]{40}", deployment_revision) is not None,
+            "Expected deployment revision must be a full commit SHA")
+    require(run("git", "rev-parse", "HEAD") == deployment_revision,
+            "Deployment checkout differs from reviewed revision")
     require(not run("git", "status", "--porcelain"), "Release checkout is dirty")
 
 
@@ -172,7 +175,9 @@ def validate_image(metadata, expected_id, expected_revision, probe):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--revision", required=True, help="Expected full source commit SHA")
+    parser.add_argument("--revision", required=True, help="Expected full image source commit SHA")
+    parser.add_argument("--deployment-revision", required=True,
+                        help="Reviewed full commit SHA for this Compose file and preflight")
     parser.add_argument("--image-id", required=True, help="Expected local sha256 image ID")
     parser.add_argument("--env-file", type=Path, required=True,
                         help="Local production Compose env file; contents are never printed")
@@ -184,7 +189,7 @@ def main():
     try:
         require(not COMPOSE_VARIABLES.intersection(os.environ),
                 "Unset exported Compose deployment variables before preflight")
-        validate_revision(args.revision)
+        validate_revisions(args.revision, args.deployment_revision)
         require(re.fullmatch(r"sha256:[0-9a-f]{64}", args.image_id) is not None,
                 "Expected image ID must be a full sha256 identifier")
         require(args.env_file.is_file(), "Local Compose env file is missing")
