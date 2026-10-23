@@ -118,6 +118,15 @@ def test_secret_mount_must_exist_without_reading(config):
         preflight.validate_compose(config)
 
 
+def test_secret_mounts_must_belong_to_correct_service(config):
+    inspector = config["services"]["inspector"]
+    tunnel = config["services"]["tunnel-client"]
+    inspector["volumes"][0], tunnel["volumes"][0] = (
+        tunnel["volumes"][0], inspector["volumes"][0])
+    with pytest.raises(ValueError, match="mounts differ for inspector"):
+        preflight.validate_compose(config)
+
+
 def test_image_identity_modules_and_ssh_restrictions():
     image_id = "sha256:" + "a" * 64
     revision = "b" * 40

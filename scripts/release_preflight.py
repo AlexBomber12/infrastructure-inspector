@@ -15,9 +15,8 @@ ROOT = Path(__file__).resolve().parents[1]
 VERSION = "0.3.0"
 IMAGE = f"infrastructure-inspector:{VERSION}"
 SECRET_TARGETS = {
-    "/run/secrets/sg-audit-ed25519",
-    "/run/secrets/ssh-known-hosts",
-    "/run/secrets/control-plane-api-key",
+    "inspector": {"/run/secrets/sg-audit-ed25519", "/run/secrets/ssh-known-hosts"},
+    "tunnel-client": {"/run/secrets/control-plane-api-key"},
 }
 SSH_OPTIONS = {
     "StrictHostKeyChecking=yes", "IdentitiesOnly=yes", "IdentityAgent=none",
@@ -87,18 +86,19 @@ def validate_compose(config):
             "Private network must remain internal")
     require(inspector.get("ports") is None and inspector.get("network_mode") is None,
             "Inspector must not publish ports or use host networking")
-    mounts = [v for service in services.values() for v in service.get("volumes", [])]
-    require({v["target"] for v in mounts} == SECRET_TARGETS,
-            "Required secret mounts differ from single-host contract")
-    for mount in mounts:
-        require(mount.get("type") == "bind" and mount.get("read_only") is True,
-                "Secret mounts must be read-only binds")
-        require(mount.get("bind", {}).get("create_host_path") is not True,
-                "Secret mounts must not create host paths")
-        require(Path(mount["source"]).is_file(),
-                f"Required local secret file missing: {mount['target']}")
-        require("docker.sock" not in mount["source"] and "docker.sock" not in mount["target"],
-                "Docker socket mount is forbidden")
+    for service_name, targets in SECRET_TARGETS.items():
+        mounts = services[service_name].get("volumes", [])
+        require({v["target"] for v in mounts} == targets,
+                f"Required secret mounts differ for {service_name}")
+        for mount in mounts:
+            require(mount.get("type") == "bind" and mount.get("read_only") is True,
+                    "Secret mounts must be read-only binds")
+            require(mount.get("bind", {}).get("create_host_path") is not True,
+                    "Secret mounts must not create host paths")
+            require(Path(mount["source"]).is_file(),
+                    f"Required local secret file missing: {mount['target']}")
+            require("docker.sock" not in mount["source"] and "docker.sock" not in mount["target"],
+                    "Docker socket mount is forbidden")
     tunnel = services["tunnel-client"]
     require(tunnel.get("privileged") is not True and tunnel.get("read_only") is True
             and not tunnel.get("cap_add") and not tunnel.get("devices"),
