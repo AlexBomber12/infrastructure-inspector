@@ -24,5 +24,5 @@ docker run --rm \
   --entrypoint pytest \
   infrastructure-inspector-test:ci \
   -q -p no:cacheprovider /opt/tests/test_inspector.py /opt/tests/test_protocol.py /opt/tests/test_release_preflight.py \
-  --cov=/opt/ssh-inspector --cov=/opt/host --cov-branch \
+  --cov=/opt/ssh-inspector --cov=/opt/host --cov=/opt/scripts --cov-branch \
   --cov-report=term-missing --cov-fail-under=100

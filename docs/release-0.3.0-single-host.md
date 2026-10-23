@@ -54,6 +54,7 @@ restart containers, or modify the host. A failed check stops the upgrade.
 ```sh
 python3 scripts/release_preflight.py \
   --revision "$release_revision" --image-id "$release_image_id" \
+  --compose-file /path/to/private/compose.yaml \
   --env-file /path/to/private/.env \
   --dispatcher /path/to/staged/sg-audit-dispatch.py
 ```
@@ -114,7 +115,8 @@ Never depend on the mutable `0.2.0` tag without checking its image ID.
 3. Make the verified 0.3.0 image ID available on the deployment host and
    confirm its OCI version/revision labels. Confirm the single-host Compose
    file resolves to the approved image, secrets and network. Run the preflight
-   again on that host against the staged dispatcher and recorded image ID.
+   again on that host against the staged dispatcher, **the exact Compose
+   file used by the replacement command**, and recorded image ID.
 4. Replace **only** the Inspector container using the approved Compose file:
 
    ```sh

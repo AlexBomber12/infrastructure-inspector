@@ -208,7 +208,8 @@ The unit layer executes the production Python modules and covers normal and erro
 paths, subprocess limits, and dispatcher authorization. The protocol layer uses
 the MCP SDK client over real Streamable HTTP against a disposable Inspector with
 a controlled SSH execution fixture. Coverage.py measures all first-party
-production Python files in `inspector/` and `host/`, including branch arcs;
+production Python files in `inspector/`, `host/`, and the release preflight in
+`scripts/`, including branch arcs;
 pytest-cov prints missing lines and branches and fails below 100%. Test files
 are outside the coverage source paths.
 

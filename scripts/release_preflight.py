@@ -142,14 +142,17 @@ def main():
     parser.add_argument("--image-id", required=True, help="Expected local sha256 image ID")
     parser.add_argument("--env-file", type=Path, required=True,
                         help="Local production Compose env file; contents are never printed")
+    parser.add_argument("--compose-file", type=Path, required=True,
+                        help="Exact local Compose file intended for deployment")
     parser.add_argument("--dispatcher", type=Path, required=True,
                         help="Locally staged dispatcher intended for the host")
     args = parser.parse_args()
     try:
         validate_source(args.revision)
         require(args.env_file.is_file(), "Local Compose env file is missing")
+        require(args.compose_file.is_file(), "Deployment Compose file is missing")
         config = json.loads(run("docker", "compose", "--env-file", str(args.env_file),
-                                "-f", "compose.yaml", "config", "--format", "json"))
+                                "-f", str(args.compose_file.resolve()), "config", "--format", "json"))
         validate_compose(config)
         metadata = json.loads(run("docker", "image", "inspect", IMAGE))[0]
         probe = json.loads(run("docker", "run", "--rm", "--network", "none", "--read-only",
