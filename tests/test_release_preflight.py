@@ -15,6 +15,10 @@ SCRIPT = Path(__file__).resolve().parents[1] / "scripts/release_preflight.py"
 spec = importlib.util.spec_from_file_location("release_preflight", SCRIPT)
 preflight = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(preflight)
+policy_spec = importlib.util.spec_from_file_location(
+    "network_policy_verify", SCRIPT.with_name("network_policy_verify.py"))
+policy_verify = importlib.util.module_from_spec(policy_spec)
+policy_spec.loader.exec_module(policy_verify)
 
 
 @pytest.fixture
@@ -92,6 +96,14 @@ def test_multi_host_secret_probes(multi_config):
         preflight.validate_secrets(multi_config, image)
     commands = [call.args[0] for call in calls.call_args_list]
     assert len(commands) == 6
+    assert len({cmd[4] for cmd in commands}) == 6
+    for cmd in commands:
+        assert cmd[:4] == ("docker", "run", "--rm", "--name")
+        assert "--network" in cmd and cmd[cmd.index("--network") + 1] == "none"
+        assert "--read-only" in cmd and "--cap-drop" in cmd
+        assert "no-new-privileges:true" in cmd
+        assert "--pids-limit" in cmd and "--memory" in cmd
+        assert calls.call_args_list[commands.index(cmd)].kwargs["timeout"] == 30
     assert any(preflight.SECRET_DIR_META_PROBE in cmd for cmd in commands)
     assert any(preflight.MULTI_SECRET_PROBE in cmd for cmd in commands)
     with patch.object(preflight.subprocess, "run", side_effect=[
@@ -299,6 +311,98 @@ def test_secret_probe_timeout_removes_only_its_disposable_container(
         assert f"cleanup unverified for disposable container {probe[4]}" in str(error.value)
         assert "inspect or remove that container manually" in str(error.value)
         assert "removed" not in str(error.value)
+
+
+@pytest.mark.parametrize("config_kind,probe_index,script", [
+    ("single", 0, preflight.SECRET_META_PROBE),
+    ("single", 1, preflight.SECRET_ACCESS_PROBE),
+    ("multi", 2, preflight.SECRET_DIR_META_PROBE),
+    ("multi", 5, preflight.MULTI_SECRET_PROBE),
+])
+@pytest.mark.parametrize("cleanup_kind", ["success", "nonzero", "oserror", "timeout"])
+def test_every_secret_probe_timeout_uses_targeted_cleanup(
+        config, multi_config, config_kind, probe_index, script, cleanup_kind):
+    selected = config if config_kind == "single" else multi_config
+    image_id = selected["services"]["inspector"]["image"]
+    seen = []
+
+    def docker_call(command, **kwargs):
+        seen.append((command, kwargs))
+        if command[:2] == ("docker", "run"):
+            if len([item for item, _ in seen if item[:2] == ("docker", "run")]) == probe_index + 1:
+                raise preflight.subprocess.TimeoutExpired(
+                    command, 30, output=b"SENSITIVE_BYTES", stderr=b"SENSITIVE_BYTES")
+            return SimpleNamespace(returncode=0, stdout="[1,2]")
+        if cleanup_kind == "oserror":
+            raise OSError("SENSITIVE_BYTES")
+        if cleanup_kind == "timeout":
+            raise preflight.subprocess.TimeoutExpired(command, 5, output=b"SENSITIVE_BYTES")
+        return SimpleNamespace(returncode=0 if cleanup_kind == "success" else 1,
+                               stdout=b"SENSITIVE_BYTES", stderr=b"SENSITIVE_BYTES")
+
+    with patch.object(preflight.subprocess, "run", side_effect=docker_call):
+        with pytest.raises(ValueError, match="probe timed out") as error:
+            preflight.validate_secrets(selected, image_id)
+    probes = [item for item, _ in seen if item[:2] == ("docker", "run")]
+    target = probes[probe_index]
+    assert script in target
+    assert len({probe[4] for probe in probes}) == len(probes)
+    assert seen[-1][0] == ("docker", "container", "rm", "--force", target[4])
+    assert seen[-1][1]["timeout"] == 5
+    assert "SENSITIVE_BYTES" not in str(error.value)
+    if cleanup_kind == "success":
+        assert f"container {target[4]} removed" in str(error.value)
+    else:
+        assert f"cleanup unverified for disposable container {target[4]}" in str(error.value)
+
+
+def test_secret_probe_start_error_is_sanitized(config):
+    image_id = config["services"]["inspector"]["image"]
+    with patch.object(preflight.subprocess, "run", side_effect=OSError("SENSITIVE_BYTES")):
+        with pytest.raises(ValueError, match="Docker probe could not start") as error:
+            preflight.validate_secrets(config, image_id)
+    assert "SENSITIVE_BYTES" not in str(error.value)
+
+
+def test_secret_probe_invalid_metadata_is_sanitized(config):
+    image_id = config["services"]["inspector"]["image"]
+    with patch.object(preflight.subprocess, "run", return_value=SimpleNamespace(
+        returncode=0, stdout="SENSITIVE_BYTES")):
+        with pytest.raises(ValueError, match="Required secret") as error:
+            preflight.validate_secrets(config, image_id)
+    assert "SENSITIVE_BYTES" not in str(error.value)
+
+
+def test_policy_json_verifier_rejects_mutation_and_normalizes_handles(monkeypatch, capsys):
+    args = ["10.240.1.2", "02:42:AC:F0:01:02", "10.240.1.1", "10.240.2.2",
+            "br-test-eg", "10.240.3.2"]
+    expected = policy_verify.expected_policy(*args[:5], args[5:])
+    actual = {"nftables": [{"metainfo": {"version": "1"}},
+                           *copy.deepcopy(expected)]}
+    for index, item in enumerate(actual["nftables"][1:]):
+        next(iter(item.values()))["handle"] = index + 1
+    assert policy_verify.verify_policy(actual, expected) is None
+    assert policy_verify.normalize("FD42::1") == "fd42::1"
+    assert policy_verify.normalize(22) == 22
+    assert policy_verify.normalize("br-test-eg") == "br-test-eg"
+    for mutate in (lambda policy: policy["nftables"].pop(),
+                   lambda policy: policy["nftables"].append({"set": {"name": "extra"}}),
+                   lambda policy: policy["nftables"][-1]["rule"].update(chain="other"),
+                   lambda policy: policy["nftables"][2]["chain"].update(prio=0)):
+        changed = copy.deepcopy(actual)
+        mutate(changed)
+        with pytest.raises(ValueError):
+            policy_verify.verify_policy(changed, expected)
+    import io
+    monkeypatch.setattr(policy_verify.sys, "stdin", io.StringIO(json.dumps(actual)))
+    assert policy_verify.main(args) == 0
+    monkeypatch.setattr(policy_verify.sys, "stdin", io.StringIO("{bad"))
+    assert policy_verify.main(args) == 1
+    assert "installed policy" in capsys.readouterr().err
+    monkeypatch.setattr(sys, "argv", [str(SCRIPT.with_name("network_policy_verify.py")), *args])
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(actual)))
+    with pytest.raises(SystemExit, match="0"):
+        runpy.run_path(str(SCRIPT.with_name("network_policy_verify.py")), run_name="__main__")
 
 
 def test_secret_mounts_must_belong_to_correct_service(config):
@@ -522,6 +626,18 @@ def test_cli_failure_is_reported_without_secret_contents(tmp_path, capsys):
     ), patch.object(preflight, "run", side_effect=ValueError("invalid Compose")):
         assert preflight.main() == 1
     assert "invalid Compose" in capsys.readouterr().err
+    with patch.object(sys, "argv", args), patch.object(
+        preflight, "validate_revisions"
+    ), patch.object(preflight, "validate_compose"), patch.object(
+        preflight, "validate_image"
+    ), patch.object(preflight, "validate_secrets", side_effect=ValueError(
+        "probe timed out; cleanup unverified for disposable container release-preflight-test"
+    )), patch.object(preflight, "run", side_effect=[
+        json.dumps({"name": "running-project", "services": {}, "networks": {}}),
+        json.dumps({"services": {}}), json.dumps([{"Id": "sha256:" + "b" * 64}]),
+        json.dumps({"modules": []})]):
+        assert preflight.main() == 1
+    assert "cleanup unverified for disposable container" in capsys.readouterr().err
     with patch.object(sys, "argv", args), patch.object(
         preflight, "validate_revisions"
     ), patch.object(preflight, "run", return_value=json.dumps({"name": "wrong-project"})):

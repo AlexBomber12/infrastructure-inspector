@@ -8,6 +8,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -84,6 +85,22 @@ def main():
             preflight.validate_compose(config, copy.deepcopy(config),
                                        config["services"]["inspector"]["image"])
             preflight.validate_secrets(config, image)
+            try:
+                preflight.secret_probe(
+                    image, "65533:65533",
+                    (f"type=bind,src={sources[0]},dst=/source-file,readonly",),
+                    "import time; time.sleep(120)", (), "Synthetic timeout probe")
+            except ValueError as exc:
+                assert "probe timed out" in str(exc) and " removed" in str(exc)
+                name = re.search(r"container (release-preflight-[0-9a-f]+) removed", str(exc))
+                assert name is not None
+                inspected = subprocess.run(
+                    ["docker", "container", "inspect", name.group(1)],
+                    capture_output=True, text=True, check=False, timeout=5)
+                assert inspected.returncode != 0, "Timed-out probe container still exists"
+            else:
+                raise AssertionError("Synthetic Docker timeout probe unexpectedly finished")
+            print("Protected Docker probe timeout cleanup passed")
             for name in ("key", "tunnel"):
                 for case in ("missing", "empty", "directory", "symlink", "inaccessible"):
                     fixture_change(directory, image, case, name)

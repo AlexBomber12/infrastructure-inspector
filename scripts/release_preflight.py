@@ -272,6 +272,38 @@ def validate_multi_networks(config):
             "Inspector addresses must be usable within their networks")
 
 
+def secret_probe(image_id, user, mounts, script, args, message):
+    """Run one named, constrained Docker probe and account for timeout cleanup."""
+    name = f"release-preflight-{uuid.uuid4().hex}"
+    command = ["docker", "run", "--rm", "--name", name, "--network", "none",
+               "--read-only", "--cap-drop", "ALL", "--security-opt",
+               "no-new-privileges:true", "--pids-limit", "32", "--memory", "128m",
+               "--user", user]
+    for mount in mounts:
+        command.extend(("--mount", mount))
+    command.extend(("--entrypoint", "python", image_id, "-c", script, *args))
+    try:
+        result = subprocess.run(tuple(command), cwd=ROOT, capture_output=True,
+                                text=True, check=False, timeout=30)
+    except subprocess.TimeoutExpired:
+        try:
+            cleanup = subprocess.run(
+                ("docker", "container", "rm", "--force", name), cwd=ROOT,
+                capture_output=True, timeout=5, check=False)
+        except (OSError, subprocess.TimeoutExpired):
+            cleanup = None
+        if cleanup is None or cleanup.returncode != 0:
+            raise ValueError(
+                f"{message} (probe timed out; cleanup unverified for disposable "
+                f"container {name}; inspect or remove that container manually)") from None
+        raise ValueError(f"{message} (probe timed out; disposable container "
+                         f"{name} removed)") from None
+    except OSError:
+        raise ValueError(f"{message} (Docker probe could not start)") from None
+    require(result.returncode == 0, message)
+    return result.stdout
+
+
 def validate_secrets(config, image_id):
     """Use Docker's bind resolution; host-side stat cannot cross protected parents."""
     multi = "ssh-egress" in config["networks"]
@@ -289,16 +321,9 @@ def validate_secrets(config, image_id):
             message = (f"Required secret is missing, unsafe, empty, or inaccessible "
                        f"to {service_name}: {target}")
             if target == "/run/secrets/inspector-hosts":
-                result = subprocess.run(
-                    ("docker", "run", "--rm", "--network", "none", "--read-only",
-                     "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
-                     "--pids-limit", "32", "--memory", "128m",
-                     "--user", "0:0", "--mount",
-                     f"type=bind,src={source.parent},dst=/source-parent,readonly",
-                     "--entrypoint", "python", image_id, "-c", SECRET_DIR_META_PROBE,
-                     source.name), cwd=ROOT, capture_output=True, text=True,
-                    check=False, timeout=30)
-                require(result.returncode == 0, message)
+                secret_probe(image_id, "0:0",
+                             (f"type=bind,src={source.parent},dst=/source-parent,readonly",),
+                             SECRET_DIR_META_PROBE, (source.name,), message)
                 continue
             for user, bind, script, args in (
                 ("0:0", f"type=bind,src={source.parent},dst=/source-parent,readonly",
@@ -306,31 +331,11 @@ def validate_secrets(config, image_id):
                 (f"{uid}:{gid}", f"type=bind,src={source},dst=/source-file,readonly",
                  SECRET_ACCESS_PROBE, ())
             ):
-                probe_name = f"release-preflight-{uuid.uuid4().hex}"
-                command = ("docker", "run", "--rm", "--name", probe_name,
-                     "--network", "none", "--read-only",
-                     "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
-                     "--pids-limit", "32", "--memory", "128m", "--user", user,
-                     "--mount", bind, "--entrypoint", "python", image_id,
-                     "-c", script, *args)
                 try:
-                    result = subprocess.run(command, cwd=ROOT, capture_output=True,
-                                            text=True, check=False, timeout=30)
-                except subprocess.TimeoutExpired:
-                    try:
-                        cleanup = subprocess.run(
-                            ("docker", "container", "rm", "--force", probe_name),
-                            cwd=ROOT, capture_output=True, timeout=5, check=False)
-                    except (OSError, subprocess.TimeoutExpired):
-                        cleanup = None
-                    if cleanup is None or cleanup.returncode != 0:
-                        raise ValueError(
-                            f"{message} (probe timed out; cleanup unverified for disposable "
-                            f"container {probe_name}; inspect or remove that container manually)") from None
-                    raise ValueError(f"{message} (probe timed out; disposable container "
-                                     f"{probe_name} removed)") from None
-                require(result.returncode == 0, message)
-                identity = json.loads(result.stdout)
+                    identity = json.loads(secret_probe(image_id, user, (bind,), script,
+                                                       args, message))
+                except json.JSONDecodeError:
+                    raise ValueError(message) from None
                 require(isinstance(identity, list) and len(identity) == 2
                         and all(isinstance(value, int) for value in identity), message)
                 identities.append(identity)
@@ -340,20 +345,12 @@ def validate_secrets(config, image_id):
         inspector = config["services"]["inspector"]
         mounts = [f"type=bind,src={mount['source']},dst={mount['target']},readonly"
                   for mount in inspector["volumes"]]
-        command = ["docker", "run", "--rm", "--network", "none", "--read-only",
-                   "--user", "65533:65533", "--cap-drop", "ALL",
-                   "--security-opt", "no-new-privileges:true"]
-        for mount in mounts:
-            command.extend(("--mount", mount))
         private_gateway = config["networks"]["mcp-private"]["ipam"]["config"][0]["gateway"]
         private_subnet = config["networks"]["mcp-private"]["ipam"]["config"][0]["subnet"]
         egress_subnet = config["networks"]["ssh-egress"]["ipam"]["config"][0]["subnet"]
-        command.extend(("--entrypoint", "python", image_id, "-c", MULTI_SECRET_PROBE,
-                        private_gateway, private_subnet, egress_subnet))
-        result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True,
-                                check=False, timeout=30)
-        require(result.returncode == 0,
-                "Multi-host registry or per-host credentials are invalid or unreadable")
+        secret_probe(image_id, "65533:65533", mounts, MULTI_SECRET_PROBE,
+                     (private_gateway, private_subnet, egress_subnet),
+                     "Multi-host registry or per-host credentials are invalid or unreadable")
 
 
 def validate_image(metadata, expected_id, expected_revision, probe):

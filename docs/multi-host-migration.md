@@ -77,8 +77,10 @@ packet tests before Inspector is started.
    `--image-id`, and `--snapshot`. It checks the effective Compose contract,
    immutable image and source revision, Inspector DNS sink, current snapshot, Tunnel hash, registry
    schema and default ID, and actual mounted credential readability using
-   constrained Docker probes. No credential contents are printed. A failed
-   probe stops migration.
+   constrained, named Docker probes. No credential contents are printed. A failed
+   probe stops migration. If a probe times out and targeted container cleanup
+   cannot be confirmed, inspect the reported disposable container name before
+   proceeding; no broad Docker cleanup is performed.
 
 ## Network policy and controlled start
 
@@ -99,15 +101,19 @@ sudo bash scripts/multi_network_policy.sh install "$PRIVATE_IP" "$PRIVATE_MAC" "
 ```
 
 The install validates then atomically replaces only `inet inspector_multi`.
-It is idempotent. Use an operator-owned systemd oneshot policy unit with
+It is idempotent. Before Inspector starts, and after any Docker or firewall
+restart, run `verify` with the same reviewed arguments as `install`. Verification
+compares the complete installed table, base chains, hooks and ordered rules;
+if it fails, keep Inspector stopped and reinstall the reviewed policy before
+rechecking packet behavior. Use an operator-owned systemd oneshot policy unit with
 `Before=docker.service` and a Docker drop-in with `Requires=` and `After=`
 pointing to that unit. Its `ExecStart` calls the same installer with the
 reviewed private arguments. Manage Inspector with a separate unit that has
 `Requires=`/`BindsTo=` on the policy unit, `After=docker.service`, starts only
 Inspector with the command below, and stops only Inspector in `ExecStop`.
 Keep Compose's multi-host `restart: "no"`. The policy must be loaded before
-Docker can start containers on boot; after a Docker restart, recheck its
-presence and packet behavior before starting Inspector. Do not rely on a
+Docker can start containers on boot; after a Docker restart, verify its
+contents and packet behavior before starting Inspector. Do not rely on a
 one-time `DOCKER-USER` rule. Stop Inspector before any firewall reload that
 could flush the table. If ordering, persistence, or this stop-before-flush
 behavior cannot be demonstrated on the actual host, **do not migrate**.

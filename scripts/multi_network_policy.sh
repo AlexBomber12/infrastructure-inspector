@@ -63,7 +63,10 @@ command -v nft >/dev/null || fail 'nft is required'
   [[ $(cat /proc/sys/net/bridge/bridge-nf-call-iptables) == 1 ]] ||
   fail 'br_netfilter with bridge-nf-call-iptables=1 is required'
 if [[ $mode == verify ]]; then
-  nft list table inet inspector_multi >/dev/null || fail 'policy table is missing'
+  installed=$(nft -j list table inet inspector_multi 2>/dev/null) || fail 'policy table is missing or unreadable'
+  printf '%s\n' "$installed" | python3 "$(dirname -- "${BASH_SOURCE[0]}")/network_policy_verify.py" \
+    "$private_ip" "$private_mac" "$private_gateway" "$egress_ip" "$egress_bridge" "$@" ||
+    fail 'installed policy verification failed'
   exit
 fi
 

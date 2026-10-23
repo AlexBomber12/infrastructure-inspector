@@ -70,6 +70,48 @@ trap 'kill "$host_server" "$host_alt_server" "$ai_server" "$bad_server" "$bad_po
 
 bash "$policy" install "$private_ip" "$private_mac" "$private_gateway" "$egress_ip" "$bridge" "$ai_ip"
 bash "$policy" verify "$private_ip" "$private_mac" "$private_gateway" "$egress_ip" "$bridge" "$ai_ip"
+verify() { bash "$policy" verify "$private_ip" "$private_mac" "$private_gateway" "$egress_ip" "$bridge" "$ai_ip"; }
+reinstall() { bash "$policy" install "$private_ip" "$private_mac" "$private_gateway" "$egress_ip" "$bridge" "$ai_ip"; verify; }
+reject_policy() {
+  if verify >/dev/null 2>&1; then echo 'Mutated policy passed verification' >&2; exit 1; fi
+}
+rule_handle() {
+  nft -j -a list table inet inspector_multi | python3 -c '
+import json, sys
+chain, index = sys.argv[1], int(sys.argv[2])
+rules = [entry["rule"] for entry in json.load(sys.stdin)["nftables"]
+         if "rule" in entry and entry["rule"]["chain"] == chain]
+print(rules[index]["handle"])
+' "$1" "$2"
+}
+nft add table inet unrelated_test
+if bash "$policy" verify "$private_ip" "$private_mac" "$private_gateway" "$egress_ip" "$bridge" 10.240.3.3 >/dev/null 2>&1; then
+  echo 'Verification accepted the wrong authorized destination' >&2; exit 1
+fi
+nft delete rule inet inspector_multi input handle "$(rule_handle input 1)"
+reject_policy
+reinstall
+nft delete rule inet inspector_multi input handle "$(rule_handle input 1)"
+nft insert rule inet inspector_multi input iifname "br-*" ether saddr "$private_mac" drop
+reject_policy
+reinstall
+nft list table inet unrelated_test >/dev/null
+nft delete rule inet inspector_multi forward handle "$(rule_handle forward 3)"
+nft insert rule inet inspector_multi forward iifname "$bridge" ip saddr "$egress_ip" ip daddr 10.240.3.3 tcp dport 22 accept
+reject_policy
+reinstall
+nft insert rule inet inspector_multi forward iifname "$bridge" accept
+reject_policy
+reinstall
+nft flush chain inet inspector_multi forward
+nft delete chain inet inspector_multi forward
+nft 'add chain inet inspector_multi forward { type filter hook forward priority 0; policy accept; }'
+reject_policy
+reinstall
+nft delete rule inet inspector_multi output handle "$(rule_handle output 0)"
+reject_policy
+reinstall
+nft list table inet unrelated_test >/dev/null
 nc -l -p 53 -s 127.0.0.254 >/dev/null & dns_tcp_server=$!
 if nc -z -w 1 127.0.0.254 53; then
   echo 'Docker DNS sink accepted TCP traffic' >&2; exit 1
@@ -155,4 +197,4 @@ bash "$policy" remove
 nc -z -w 1 127.0.0.254 53
 wait "$dns_tcp_server"
 allow 10.240.3.3 22
-echo 'Disposable packet allow, deny, IPv6 and rollback checks passed'
+echo 'Disposable policy mutation verification, packet allow/deny, IPv6 and rollback checks passed'
