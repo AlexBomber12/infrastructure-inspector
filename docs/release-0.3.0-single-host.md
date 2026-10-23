@@ -1,8 +1,8 @@
 # Inspector 0.3.0 single-host deployment
 
-The observed production Inspector is 0.3.0. The running image ID was reported as
-`sha256:fc22d3119b70c4a4f37a78dcd17a393c8370d0b9c41be9000a36ea4fb30c2479`.
-This is operator-reported context, not a CI assertion about the live host. The
+The observed production Inspector is 0.3.0; this is operator-reported context,
+not a CI assertion about the live host. Keep its actual image ID in the private
+operator release record, outside this public repository. The
 current deployment needed a temporary Compose override for its SSH target and
 host label. This procedure moves those values into one permanent, private
 Compose env file. It changes only the Inspector container. Do not copy the
