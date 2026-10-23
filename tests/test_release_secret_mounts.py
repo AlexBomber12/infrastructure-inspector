@@ -76,7 +76,7 @@ def main():
             original = subprocess.run([
                 sys.executable, "-c",
                 "from pathlib import Path; import sys\n"
-                "try: Path(sys.argv[1]).is_file()\n"
+                "try: Path(sys.argv[1]).stat()\n"
                 "except PermissionError: sys.exit(0)\n"
                 "sys.exit(1)", str(sources[0])],
                 capture_output=True, text=True, check=False, **operator)
