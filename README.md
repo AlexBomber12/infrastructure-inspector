@@ -6,15 +6,16 @@ Infrastructure Inspector enables ChatGPT and other MCP clients to inspect Linux 
 
 ## Status
 
-Version: 0.3.0 (development branch; production remains 0.2.0)
+Version: 0.3.0. The operator reports that production runs the 0.3.0 image;
+automated tests do not attest the live deployment.
 
 The single-host 0.3.0 release image is `infrastructure-inspector:0.3.0`.
-For a future authorized pilot, use the [release preflight and rollback
-runbook](docs/release-0.3.0-single-host.md). This source change does not deploy
-or replace the running 0.2.0 service.
+For the single-host deployment procedure, use the [release preflight and rollback
+runbook](docs/release-0.3.0-single-host.md). This repository change does not
+deploy or replace the running service.
 
-Production 0.2.0 provides MCP-to-SSH diagnostic transport. The checks below
-describe development capability and require a separate, explicit deployment.
+The checks below describe the 0.3.0 application contract. CI tests them against
+disposable hosts; live production behavior requires operator verification.
 
 ## Capabilities
 
@@ -66,7 +67,7 @@ inventory, particularly for process and mount tables. The fixed 16,384-byte
 limit also applies to device and network output. Exhaustive inventory on a
 larger host would need a separately designed pagination interface. These
 checks cover selected Linux diagnostics, not a complete infrastructure
-inventory. Production Inspector 0.2.0 does not have these development checks.
+inventory.
 
 Each `inspect` result contains `host`, `host_id`, `check_id`, `collected_at` (UTC ISO
 8601), `status` (`success`, `error`, or `incomplete`), `exit_code` (or null),
@@ -121,7 +122,10 @@ Do not extend the current authentication model to privileged operations or sensi
 
 ## Configuration
 
-Copy `.env.example` to `.env` and configure deployment-specific values.
+For production, copy `.env.example` to an operator-owned `.env` outside Git and
+configure deployment-specific values, including the full verified
+`INSPECTOR_IMAGE_ID`. Pass it with Compose `--env-file`; this file supplies
+Compose interpolation. The single-host Compose file has no build path.
 
 The example contains placeholders. Deployment requires a dedicated SSH account, authorized key, ForceCommand dispatcher, private key and trusted host key.
 

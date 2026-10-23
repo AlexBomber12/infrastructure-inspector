@@ -2,9 +2,8 @@ name: infrastructure-inspector
 
 services:
   inspector:
-    build:
-      context: ./inspector
-    image: infrastructure-inspector:0.3.0
+    image: ${INSPECTOR_IMAGE_ID:?Required verified sha256 image ID}
+    pull_policy: never
     user: "65533:65533"
     read_only: true
     cap_drop: [ALL]

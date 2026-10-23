@@ -21,7 +21,7 @@ for builder in 0 1; do
   image_id="$(docker image inspect --format '{{.Id}}' "$image")"
   docker run --rm --network none --read-only --user 65533:65533 \
     --entrypoint python "$image_id" -c "$probe" > "$fixture/probe.json"
-  python3 - "$fixture/image.json" "$fixture/probe.json" "$image_id" <<'PY'
+  python3 - "$fixture/image.json" "$fixture/probe.json" "$image_id" "$revision" <<'PY'
 import json
 from pathlib import Path
 import runpy
@@ -30,7 +30,7 @@ import sys
 preflight = runpy.run_path("scripts/release_preflight.py")
 metadata = json.loads(Path(sys.argv[1]).read_text())[0]
 probe = json.loads(Path(sys.argv[2]).read_text())
-preflight["validate_image"](metadata, sys.argv[3], probe)
+preflight["validate_image"](metadata, sys.argv[3], sys.argv[4], probe)
 assert probe["modules"] == [
     f"/opt/ssh-inspector/{name}.py"
     for name in ("server", "catalog", "bounded", "hosts")

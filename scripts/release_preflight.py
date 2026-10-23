@@ -2,9 +2,7 @@
 """Local, read-only release checks. No production network or container changes."""
 
 import argparse
-import ast
 import copy
-import hashlib
 import ipaddress
 import json
 import os
@@ -14,11 +12,16 @@ import subprocess
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "inspector"))
-from hosts import valid_target
+from hosts import LABEL, valid_target
 
 ROOT = Path(__file__).resolve().parents[1]
 VERSION = "0.3.0"
-IMAGE = f"infrastructure-inspector:{VERSION}"
+COMPOSE_VARIABLES = {
+    "INSPECTOR_IMAGE_ID", "INSPECTOR_SSH_TARGET", "INSPECTOR_HOST_LABEL",
+    "INSPECTOR_SSH_KEY_PATH", "INSPECTOR_KNOWN_HOSTS_PATH",
+    "INSPECTOR_DOCKER_SUBNET", "INSPECTOR_DOCKER_GATEWAY",
+    "OPENAI_TUNNEL_ID", "OPENAI_TUNNEL_API_KEY_PATH", "COMPOSE_PROJECT_NAME",
+}
 SECRET_TARGETS = {
     "inspector": {"/run/secrets/sg-audit-ed25519", "/run/secrets/ssh-known-hosts"},
     "tunnel-client": {"/run/secrets/control-plane-api-key"},
@@ -47,25 +50,14 @@ def run(*args):
     return result.stdout.strip()
 
 
-def application_version(source):
-    tree = ast.parse(source)
-    versions = [keyword.value.value for node in ast.walk(tree)
-                if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-                and node.func.id == "MCPServer"
-                for keyword in node.keywords if keyword.arg == "version"
-                and isinstance(keyword.value, ast.Constant)]
-    require(len(versions) == 1, "Expected one literal MCP application version")
-    return versions[0]
-
-
-def validate_source(expected_revision):
-    require(re.fullmatch(r"[0-9a-f]{40}", expected_revision) is not None,
-            "Expected revision must be a full commit SHA")
-    require(run("git", "rev-parse", "HEAD") == expected_revision,
-            "Source revision differs from expected release revision")
-    require(not run("git", "status", "--porcelain"), "Source working tree is dirty")
-    require(application_version((ROOT / "inspector/server.py").read_text()) == VERSION,
-            "MCP application version differs from release version")
+def validate_revisions(image_revision, deployment_revision):
+    require(re.fullmatch(r"[0-9a-f]{40}", image_revision) is not None,
+            "Expected image source revision must be a full commit SHA")
+    require(re.fullmatch(r"[0-9a-f]{40}", deployment_revision) is not None,
+            "Expected deployment revision must be a full commit SHA")
+    require(run("git", "rev-parse", "HEAD") == deployment_revision,
+            "Deployment checkout differs from reviewed revision")
+    require(not run("git", "status", "--porcelain"), "Release checkout is dirty")
 
 
 def _runtime_contract(config):
@@ -86,23 +78,24 @@ def _runtime_contract(config):
     require(gateway in subnet, "Private network gateway is outside subnet")
     pools[0] = {"subnet": "<operator-subnet>", "gateway": "<operator-gateway>"}
     for service in contract["services"].values():
-        if "build" in service:
-            service["build"]["context"] = "<project-location>"
         for mount in service.get("volumes", []):
             mount["source"] = "<operator-path>"
         service["volumes"] = sorted(service.get("volumes", []), key=lambda mount: mount["target"])
     inspector = contract["services"]["inspector"]
+    inspector["image"] = "<verified-image-id>"
     inspector["environment"] = {key: "<operator-value>" for key in inspector["environment"]}
     tunnel = contract["services"]["tunnel-client"]
     tunnel["command"][0] = "--control-plane.tunnel-id=<operator-id>"
     return contract
 
 
-def validate_compose(config, approved):
+def validate_compose(config, approved, expected_id):
     services = config["services"]
     require(set(services) == {"inspector", "tunnel-client"}, "Unexpected Compose services")
     inspector = services["inspector"]
-    require(inspector.get("image") == IMAGE, "Compose release image tag mismatch")
+    require(inspector.get("image") == expected_id, "Compose release image ID mismatch")
+    require(inspector.get("build") is None and inspector.get("pull_policy") == "never",
+            "Inspector must use a local image without a build")
     require(inspector.get("user") == "65533:65533" and inspector.get("read_only") is True,
             "Inspector must be non-root and read-only")
     require(inspector.get("privileged") is not True and inspector.get("cap_drop") == ["ALL"],
@@ -118,8 +111,8 @@ def validate_compose(config, approved):
     require(valid_target(environment["INSPECTOR_SSH_TARGET"], legacy=True),
             "Inspector SSH target is missing or unsafe")
     label = environment["INSPECTOR_HOST_LABEL"]
-    require(isinstance(label, str) and bool(label.strip()),
-            "Inspector host label is missing")
+    require(isinstance(label, str) and LABEL.fullmatch(label) is not None,
+            "Inspector host label is missing or unsafe")
     require("ssh-egress" not in config.get("networks", {}) and
             set(inspector.get("networks", {})) == {"mcp-private"},
             "Single-host network changed")
@@ -136,7 +129,9 @@ def validate_compose(config, approved):
                     "Secret mounts must be read-only binds")
             require(mount.get("bind", {}).get("create_host_path") is not True,
                     "Secret mounts must not create host paths")
-            require(Path(mount["source"]).is_file(),
+            source = Path(mount["source"])
+            require(source.is_absolute() and source.is_file() and not source.is_symlink()
+                    and source.stat().st_size > 0,
                     f"Required local secret file missing: {mount['target']}")
             require("docker.sock" not in mount["source"] and "docker.sock" not in mount["target"],
                     "Docker socket mount is forbidden")
@@ -153,14 +148,14 @@ def validate_compose(config, approved):
             "Release Compose runtime contract differs from approved configuration")
 
 
-def validate_image(metadata, expected_id, probe):
+def validate_image(metadata, expected_id, expected_revision, probe):
     require(re.fullmatch(r"sha256:[0-9a-f]{64}", expected_id) is not None,
             "Expected image ID must be a full sha256 identifier")
     require(metadata["Id"] == expected_id, "Release image ID mismatch")
     labels = metadata["Config"].get("Labels") or {}
     require(labels.get("org.opencontainers.image.version") == VERSION,
             "Release image version label mismatch")
-    require(labels.get("org.opencontainers.image.revision") == run("git", "rev-parse", "HEAD"),
+    require(labels.get("org.opencontainers.image.revision") == expected_revision,
             "Release image source revision mismatch")
     require(metadata["Config"].get("User") == "65533:65533",
             "Release image user changed")
@@ -178,41 +173,40 @@ def validate_image(metadata, expected_id, probe):
             "SSH client restrictions changed")
 
 
-def validate_dispatcher(candidate):
-    require(candidate.is_file() and not candidate.is_symlink(),
-            "Staged dispatcher is missing or unsafe")
-    approved = ROOT / "host/sg-audit-dispatch.py"
-    digest = lambda path: hashlib.sha256(path.read_bytes()).digest()
-    require(digest(candidate) == digest(approved),
-            "Staged dispatcher differs from tested 0.3.0 dispatcher")
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--revision", required=True, help="Expected full source commit SHA")
+    parser.add_argument("--revision", required=True, help="Expected full image source commit SHA")
+    parser.add_argument("--deployment-revision", required=True,
+                        help="Reviewed full commit SHA for this Compose file and preflight")
     parser.add_argument("--image-id", required=True, help="Expected local sha256 image ID")
     parser.add_argument("--env-file", type=Path, required=True,
                         help="Local production Compose env file; contents are never printed")
     parser.add_argument("--compose-file", type=Path, required=True,
                         help="Exact local Compose file intended for deployment")
-    parser.add_argument("--dispatcher", type=Path, required=True,
-                        help="Locally staged dispatcher intended for the host")
+    parser.add_argument("--project-name", required=True,
+                        help="Compose project name recorded from the running containers")
     args = parser.parse_args()
     try:
-        validate_source(args.revision)
+        require(not COMPOSE_VARIABLES.intersection(os.environ),
+                "Unset exported Compose deployment variables before preflight")
+        validate_revisions(args.revision, args.deployment_revision)
+        require(re.fullmatch(r"sha256:[0-9a-f]{64}", args.image_id) is not None,
+                "Expected image ID must be a full sha256 identifier")
         require(args.env_file.is_file(), "Local Compose env file is missing")
         require(args.compose_file.is_file(), "Deployment Compose file is missing")
         config = json.loads(run("docker", "compose", "--env-file", str(args.env_file),
-                                "-f", str(args.compose_file.resolve()), "config", "--format", "json"))
+                                "-f", str(args.compose_file.resolve()), "-p", args.project_name,
+                                "config", "--format", "json"))
+        require(config.get("name") == args.project_name,
+                "Effective Compose project differs from the running deployment")
         approved = json.loads(run("docker", "compose", "--env-file", str(ROOT / ".env.example"),
                                   "-f", str(ROOT / "compose.yaml"), "config", "--format", "json"))
-        validate_compose(config, approved)
-        metadata = json.loads(run("docker", "image", "inspect", IMAGE))[0]
+        validate_compose(config, approved, args.image_id)
+        metadata = json.loads(run("docker", "image", "inspect", args.image_id))[0]
         probe = json.loads(run("docker", "run", "--rm", "--network", "none", "--read-only",
                                "--user", "65533:65533", "--entrypoint", "python",
                                metadata["Id"], "-c", PROBE))
-        validate_image(metadata, args.image_id, probe)
-        validate_dispatcher(args.dispatcher)
+        validate_image(metadata, args.image_id, args.revision, probe)
     except (ValueError, KeyError, IndexError, json.JSONDecodeError, OSError) as exc:
         print(f"Release preflight failed: {exc}", file=sys.stderr)
         return 1
