@@ -6,8 +6,10 @@ Requires Docker access. Docker root is used only to create and clean fixtures.
 import copy
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -69,12 +71,16 @@ def main():
                       *config["services"]["tunnel-client"]["volumes"]]
             for mount, source in zip(mounts, sources):
                 mount["source"] = str(source)
-            try:
-                sources[0].is_file()
-            except PermissionError:
-                pass
-            else:
-                raise AssertionError("original host-side PermissionError was not reproduced")
+            operator = ({"user": 65534, "group": 65534, "extra_groups": []}
+                        if os.geteuid() == 0 else {})
+            original = subprocess.run([
+                sys.executable, "-c",
+                "from pathlib import Path; import sys\n"
+                "try: Path(sys.argv[1]).is_file()\n"
+                "except PermissionError: sys.exit(0)\n"
+                "sys.exit(1)", str(sources[0])],
+                capture_output=True, text=True, check=False, **operator)
+            assert original.returncode == 0, "original host-side PermissionError was not reproduced"
             preflight.validate_compose(config, copy.deepcopy(config),
                                        config["services"]["inspector"]["image"])
             preflight.validate_secrets(config, image)
