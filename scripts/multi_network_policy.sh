@@ -59,6 +59,9 @@ if [[ $mode == render ]]; then
 fi
 
 command -v nft >/dev/null || fail 'nft is required'
+[[ -r /proc/sys/net/bridge/bridge-nf-call-iptables ]] &&
+  [[ $(cat /proc/sys/net/bridge/bridge-nf-call-iptables) == 1 ]] ||
+  fail 'br_netfilter with bridge-nf-call-iptables=1 is required'
 if [[ $mode == verify ]]; then
   nft list table inet inspector_multi >/dev/null || fail 'policy table is missing'
   exit

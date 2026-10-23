@@ -54,7 +54,11 @@ ip netns exec neighbor ip link set n-client up
 ip netns exec neighbor ip addr add 10.240.2.3/24 dev n-client
 ip netns exec neighbor ip link set lo up
 echo 1 > /proc/sys/net/ipv4/ip_forward
-test "$(cat /proc/sys/net/bridge/bridge-nf-call-iptables)" = 1
+if [[ ! -r /proc/sys/net/bridge/bridge-nf-call-iptables ]] ||
+   [[ $(cat /proc/sys/net/bridge/bridge-nf-call-iptables) != 1 ]]; then
+  echo 'Packet tests require br_netfilter with bridge-nf-call-iptables=1' >&2
+  exit 1
+fi
 
 nc -l -p 22 -s "$private_gateway" >/dev/null & host_server=$!
 nc -l -p 2222 -s "$private_gateway" >/dev/null & host_alt_server=$!
