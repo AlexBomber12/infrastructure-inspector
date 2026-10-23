@@ -32,7 +32,7 @@ check_exports() {
 
 mode=${1:-}
 snapshot=${2:-}
-[[ -n "$snapshot" ]] || fail 'usage: release_snapshot.sh capture SNAPSHOT ENV_FILE INSPECTOR_ID TUNNEL_ID | verify SNAPSHOT'
+[[ -n "$snapshot" ]] || fail 'usage: release_snapshot.sh capture SNAPSHOT ENV_FILE INSPECTOR_ID TUNNEL_ID | verify[-current] SNAPSHOT'
 
 # Compose shell exports take precedence over --env-file. Never capture an
 # apparently valid config whose values came from an unrecorded shell.
@@ -75,6 +75,7 @@ if [[ $mode == capture ]]; then
   docker image inspect "$old_image" >/dev/null || fail 'previous image is unavailable'
   docker compose --env-file "$env_file" "${inspector_args[@]}" -p "$project" config --format json > "$snapshot/effective.json" || fail 'original Compose configuration cannot be resolved'
   inspector_hash=$(label "$inspector" com.docker.compose.config-hash)
+  printf '%s\n' "$inspector_hash" > "$snapshot/inspector-config-hash"
   tunnel_hash=$(label "$tunnel" com.docker.compose.config-hash)
   resolved=$(docker compose --env-file "$env_file" "${inspector_args[@]}" -p "$project" config --hash inspector) || fail 'cannot hash Inspector configuration'
   [[ $resolved == "inspector $inspector_hash" ]] || fail 'Inspector configuration differs from the running container'
@@ -83,9 +84,9 @@ if [[ $mode == capture ]]; then
   resolved=$(docker compose --env-file "$env_file" "${inspector_args[@]}" -p "$project" config --hash tunnel-client) || fail 'cannot hash Tunnel configuration in Inspector source files'
   [[ $resolved == "tunnel-client $tunnel_hash" ]] || fail 'Inspector source files cannot reproduce the running Tunnel configuration'
   printf 'services:\n  inspector:\n    image: %s\n    pull_policy: never\n' "$old_image" > "$snapshot/rollback-image.yaml"
-  (cd "$snapshot" && sha256sum original.env effective.json rollback-image.yaml project-name inspector-container-id inspector-image-id tunnel-container-id inspector-file-order inspector-file-count inspector-file-*.yaml tunnel-file-order tunnel-file-count tunnel-file-*.yaml > SHA256SUMS)
+  (cd "$snapshot" && sha256sum original.env effective.json rollback-image.yaml project-name inspector-container-id inspector-image-id inspector-config-hash tunnel-container-id inspector-file-order inspector-file-count inspector-file-*.yaml tunnel-file-order tunnel-file-count tunnel-file-*.yaml > SHA256SUMS)
   echo 'Rollback snapshot captured and checked against running Compose labels'
-elif [[ $mode == verify ]]; then
+elif [[ $mode == verify || $mode == verify-current ]]; then
   [[ $# == 2 && -d $snapshot && ! -L $snapshot ]] || fail 'snapshot directory is missing or unsafe'
   (cd "$snapshot" && sha256sum --status -c SHA256SUMS) || fail 'snapshot files are missing or changed'
   for service in inspector tunnel; do
@@ -108,7 +109,17 @@ assert config["name"] == sys.argv[2]
 assert {"inspector", "tunnel-client"} <= set(config["services"])
 PY
   docker compose -f "$snapshot/effective.json" -f "$snapshot/rollback-image.yaml" -p "$project" config --quiet || fail 'rollback Compose configuration is invalid'
+  if [[ $mode == verify-current ]]; then
+    inspector=$(cat "$snapshot/inspector-container-id")
+    expected_hash=$(cat "$snapshot/inspector-config-hash")
+    [[ $(docker inspect --format '{{.State.Running}}' "$inspector" 2>/dev/null) == true \
+      && $(image_id "$inspector") == "$old_image" \
+      && $(label "$inspector" com.docker.compose.project) == "$project" \
+      && $(label "$inspector" com.docker.compose.service) == inspector \
+      && $(label "$inspector" com.docker.compose.config-hash) == "$expected_hash" \
+      && $(docker compose -f "$snapshot/effective.json" -f "$snapshot/rollback-image.yaml" -p "$project" ps -q inspector) == "$inspector" ]] || fail 'captured Inspector is no longer the current deployment'
+  fi
   echo 'Rollback snapshot is ready'
 else
-  fail 'expected capture or verify'
+  fail 'expected capture, verify, or verify-current'
 fi

@@ -88,6 +88,7 @@ fi
 rg -q 'configuration differs from the running container' "$fixture/wrong-order.log"
 bash scripts/release_snapshot.sh capture "$fixture/snapshot" "$fixture/original.env" "$old_container" "$tunnel"
 bash scripts/release_snapshot.sh verify "$fixture/snapshot"
+bash scripts/release_snapshot.sh verify-current "$fixture/snapshot"
 # A reversed source order does not reproduce the running Inspector config hash.
 reversed=$(docker compose --env-file "$fixture/original.env" -f "$fixture/override.yaml" -f "$fixture/base.yaml" -p "$project" config --hash inspector | awk '{print $2}')
 actual=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.config-hash"}}' "$old_container")
@@ -102,7 +103,7 @@ mv "$fixture/snapshot/inspector-file-02.missing" "$fixture/snapshot/inspector-fi
 # An unavailable previous image ID is rejected without changing containers.
 cp -a "$fixture/snapshot" "$fixture/unavailable"
 printf 'sha256:%064d\n' 0 > "$fixture/unavailable/inspector-image-id"
-(cd "$fixture/unavailable" && sha256sum original.env effective.json rollback-image.yaml project-name inspector-container-id inspector-image-id tunnel-container-id inspector-file-order inspector-file-count inspector-file-*.yaml tunnel-file-order tunnel-file-count tunnel-file-*.yaml > SHA256SUMS)
+(cd "$fixture/unavailable" && sha256sum original.env effective.json rollback-image.yaml project-name inspector-container-id inspector-image-id inspector-config-hash tunnel-container-id inspector-file-order inspector-file-count inspector-file-*.yaml tunnel-file-order tunnel-file-count tunnel-file-*.yaml > SHA256SUMS)
 if bash scripts/release_snapshot.sh verify "$fixture/unavailable" >"$fixture/unavailable.log" 2>&1; then
   echo 'Unavailable old image passed readiness' >&2; exit 1
 fi
@@ -121,6 +122,11 @@ test "$(docker inspect --format '{{.Image}}' "$candidate")" = "$new_image"
 test "$(docker compose --env-file "$fixture/original.env" -f "$fixture/base.yaml" -f "$fixture/override.yaml" -p "$project" ps -q tunnel-client)" = "$tunnel"
 bash scripts/release_snapshot.sh capture "$fixture/candidate-snapshot" "$fixture/original.env" "$candidate" "$tunnel"
 bash scripts/release_snapshot.sh verify "$fixture/candidate-snapshot"
+bash scripts/release_snapshot.sh verify-current "$fixture/candidate-snapshot"
+if bash scripts/release_snapshot.sh verify-current "$fixture/snapshot" >"$fixture/stale-inspector.log" 2>&1; then
+  echo 'Replaced Inspector passed current-deployment verification' >&2; exit 1
+fi
+rg -q 'captured Inspector is no longer the current deployment' "$fixture/stale-inspector.log"
 # A wrong host label stands in for a failed MCP post-deployment verification.
 if docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$candidate" | rg -q '^INSPECTOR_HOST_LABEL=original$'; then
   echo 'Expected candidate verification failure' >&2; exit 1

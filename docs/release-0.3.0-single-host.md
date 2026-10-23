@@ -37,13 +37,16 @@ old_inspector=REPLACE_WITH_RUNNING_INSPECTOR_CONTAINER_ID
 tunnel_before=REPLACE_WITH_RUNNING_TUNNEL_CONTAINER_ID
 bash scripts/release_snapshot.sh capture "$backup_dir" "$old_env" \
   "$old_inspector" "$tunnel_before"
-bash scripts/release_snapshot.sh verify "$backup_dir"
+bash scripts/release_snapshot.sh verify-current "$backup_dir"
 ```
 
 The capture must run while the previous Inspector is still running. If an
 original file or env value cannot be recovered, or the service hashes differ,
 stop before recreation. Do not substitute the candidate configuration for the
 old deployment. Retain the old image locally; readiness checks it by full ID.
+`verify-current` also requires the captured Inspector to remain the running
+container in the recorded project, with the same image and Compose hash. Use
+it before deployment; use `verify` for rollback after Inspector has changed.
 The snapshot is a private recovery artifact and can include resolved operator
 values. Protect and retain it until the deployment is accepted.
 
@@ -78,7 +81,7 @@ deployment_revision=REPLACE_WITH_REVIEWED_DEPLOYMENT_COMMIT_SHA
 compose_file=/private/deployment/compose.yaml
 env_file=/private/deployment/.env
 project_name=$(cat "$backup_dir/project-name")
-bash scripts/release_snapshot.sh verify "$backup_dir"
+bash scripts/release_snapshot.sh verify-current "$backup_dir"
 python3 scripts/release_preflight.py \
   --image-id "$image_id" --revision "$image_revision" \
   --deployment-revision "$deployment_revision" \
@@ -104,7 +107,7 @@ unset INSPECTOR_IMAGE_ID INSPECTOR_SSH_TARGET INSPECTOR_HOST_LABEL \
   INSPECTOR_SSH_KEY_PATH INSPECTOR_KNOWN_HOSTS_PATH \
   INSPECTOR_DOCKER_SUBNET INSPECTOR_DOCKER_GATEWAY \
   OPENAI_TUNNEL_ID OPENAI_TUNNEL_API_KEY_PATH COMPOSE_PROJECT_NAME
-bash scripts/release_snapshot.sh verify "$backup_dir"
+bash scripts/release_snapshot.sh verify-current "$backup_dir"
 python3 scripts/release_preflight.py \
   --image-id "$image_id" --revision "$image_revision" \
   --deployment-revision "$deployment_revision" \
