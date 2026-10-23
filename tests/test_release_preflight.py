@@ -128,19 +128,33 @@ def test_secret_probe_uses_effective_mounts_and_service_identity(config):
         preflight.validate_compose(config, copy.deepcopy(config), image_id)
 
 
-def test_secret_probe_timeout_removes_only_its_disposable_container(config):
+@pytest.mark.parametrize("cleanup_result,confirmed", [
+    (SimpleNamespace(returncode=0), True),
+    (SimpleNamespace(returncode=1, stdout=b"SENSITIVE_BYTES", stderr=b"SENSITIVE_BYTES"), False),
+    (OSError("SENSITIVE_BYTES"), False),
+    (preflight.subprocess.TimeoutExpired("docker container rm", 5, output=b"SENSITIVE_BYTES"), False),
+])
+def test_secret_probe_timeout_removes_only_its_disposable_container(
+        config, cleanup_result, confirmed):
     image_id = config["services"]["inspector"]["image"]
     timeout = preflight.subprocess.TimeoutExpired("docker", 30)
-    with patch.object(preflight.subprocess, "run", side_effect=[
-        timeout, SimpleNamespace(returncode=0)]) as run:
-        with pytest.raises(ValueError, match="probe timed out"):
+    with patch.object(preflight.subprocess, "run", side_effect=[timeout, cleanup_result]) as run:
+        with pytest.raises(ValueError, match="probe timed out") as error:
             preflight.validate_secrets(config, image_id)
-        assert run.call_args_list[1].args[0][:4] == (
-            "docker", "container", "rm", "--force")
-        assert run.call_args_list[1].args[0][4] == run.call_args_list[0].args[0][4]
-    with patch.object(preflight.subprocess, "run", side_effect=[timeout, OSError()]):
-        with pytest.raises(ValueError, match="probe timed out"):
-            preflight.validate_secrets(config, image_id)
+    assert run.call_count == 2
+    probe = run.call_args_list[0].args[0]
+    cleanup = run.call_args_list[1].args[0]
+    assert cleanup == ("docker", "container", "rm", "--force", probe[4])
+    assert probe[4].startswith("release-preflight-")
+    assert run.call_args_list[1].kwargs["timeout"] == 5
+    assert "SENSITIVE_BYTES" not in str(error.value)
+    if confirmed:
+        assert f"container {probe[4]} removed" in str(error.value)
+        assert "cleanup unverified" not in str(error.value)
+    else:
+        assert f"cleanup unverified for disposable container {probe[4]}" in str(error.value)
+        assert "inspect or remove that container manually" in str(error.value)
+        assert "removed" not in str(error.value)
 
 
 def test_secret_mounts_must_belong_to_correct_service(config):

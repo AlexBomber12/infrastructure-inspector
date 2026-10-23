@@ -198,13 +198,19 @@ def validate_secrets(config, image_id):
                 try:
                     result = subprocess.run(command, cwd=ROOT, capture_output=True,
                                             text=True, check=False, timeout=30)
-                except subprocess.TimeoutExpired as exc:
+                except subprocess.TimeoutExpired:
                     try:
-                        subprocess.run(("docker", "container", "rm", "--force", probe_name),
-                                       cwd=ROOT, capture_output=True, timeout=5, check=False)
+                        cleanup = subprocess.run(
+                            ("docker", "container", "rm", "--force", probe_name),
+                            cwd=ROOT, capture_output=True, timeout=5, check=False)
                     except (OSError, subprocess.TimeoutExpired):
-                        pass
-                    raise ValueError(f"{message} (probe timed out)") from exc
+                        cleanup = None
+                    if cleanup is None or cleanup.returncode != 0:
+                        raise ValueError(
+                            f"{message} (probe timed out; cleanup unverified for disposable "
+                            f"container {probe_name}; inspect or remove that container manually)") from None
+                    raise ValueError(f"{message} (probe timed out; disposable container "
+                                     f"{probe_name} removed)") from None
                 require(result.returncode == 0, message)
                 identity = json.loads(result.stdout)
                 require(isinstance(identity, list) and len(identity) == 2
