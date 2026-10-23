@@ -425,6 +425,24 @@ class InspectorTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "failed"):
                 server.inspect_server("uptime")
 
+    def test_new_check_against_old_dispatcher_fails_closed(self):
+        old_dispatcher = Path(__file__).with_name("fixtures") / "sg-audit-dispatch-020.py"
+        denied = subprocess.run(
+            [sys.executable, "-I", str(old_dispatcher)],
+            env=dict(os.environ, SSH_ORIGINAL_COMMAND="system.os"),
+            capture_output=True, timeout=5,
+        )
+        self.assertEqual(denied.returncode, 126)
+        self.assertIn(b"DENIED", denied.stderr)
+        with patch.object(server, "SSH_TARGET", "fixture"), patch.object(
+            server, "run_bounded",
+            return_value=Captured(denied.returncode, denied.stdout, denied.stderr, False),
+        ):
+            result = server.inspect("system.os")
+            self.assertEqual(result["status"], "error")
+            self.assertEqual(result["exit_code"], 126)
+            self.assertIn("DENIED", result["error"])
+
     def test_bounded_local_capture_and_timeout(self):
         command = [sys.executable, "-c", "import sys;sys.stdout.write('x'*50000)"]
         result = run_bounded(command, timeout=2, stdout_limit=1024,

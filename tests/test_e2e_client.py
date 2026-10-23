@@ -56,6 +56,13 @@ def test_legacy_operation():
     assert b"uid=" in result["output"].encode()
 
 
+def test_all_legacy_ssh_strings_reach_new_dispatcher():
+    for operation in ("identity", "uptime", "listeners", "services"):
+        result = ssh(operation)
+        assert result.returncode != 126, (operation, result.stderr)
+        assert b"DENIED" not in result.stderr
+
+
 def test_new_catalog_check():
     result = payload(asyncio.run(call("inspect", {"check_id": "system.os"})))
     assert result["host"] == "e2e-host"

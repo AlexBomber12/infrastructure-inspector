@@ -99,8 +99,10 @@ async def _exercise(url, log):
             second_batch = payload(await session.call_tool("inspect_batch", {
                 "check_ids": ["system.os"], "host_id": "b"}))
             assert second_batch[0]["host_id"] == "b"
-            legacy = payload(await session.call_tool("inspect_server", {"operation": "uptime"}))
-            assert legacy["operation"] == "uptime"
+            for operation in ("identity", "uptime", "listeners", "services"):
+                legacy = payload(await session.call_tool("inspect_server", {"operation": operation}))
+                assert legacy == {"host": "protocol-fixture", "operation": operation,
+                                  "exit_code": 0, "output": operation + "\n"}
             before = log.read_text()
             for name, args in (
                 ("inspect", {"check_id": "system.os; id"}),

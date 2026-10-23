@@ -8,6 +8,11 @@ Infrastructure Inspector enables ChatGPT and other MCP clients to inspect Linux 
 
 Version: 0.3.0 (development branch; production remains 0.2.0)
 
+The single-host 0.3.0 release image is `infrastructure-inspector:0.3.0`.
+For a future authorized pilot, use the [release preflight and rollback
+runbook](docs/release-0.3.0-single-host.md). This source change does not deploy
+or replace the running 0.2.0 service.
+
 Production 0.2.0 provides MCP-to-SSH diagnostic transport. The checks below
 describe development capability and require a separate, explicit deployment.
 
@@ -203,7 +208,8 @@ The unit layer executes the production Python modules and covers normal and erro
 paths, subprocess limits, and dispatcher authorization. The protocol layer uses
 the MCP SDK client over real Streamable HTTP against a disposable Inspector with
 a controlled SSH execution fixture. Coverage.py measures all first-party
-production Python files in `inspector/` and `host/`, including branch arcs;
+production Python files in `inspector/`, `host/`, and the release preflight in
+`scripts/`, including branch arcs;
 pytest-cov prints missing lines and branches and fails below 100%. Test files
 are outside the coverage source paths.
 
