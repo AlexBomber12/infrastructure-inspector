@@ -22,10 +22,6 @@
   },
   "services": {
     "inspector": {
-      "build": {
-        "context": "/fixture/project/inspector",
-        "dockerfile": "Dockerfile"
-      },
       "cap_drop": [
         "ALL"
       ],
@@ -36,12 +32,13 @@
         "INSPECTOR_HOST_LABEL": "example-host",
         "INSPECTOR_SSH_TARGET": "inspector@172.30.240.1"
       },
-      "image": "infrastructure-inspector:0.3.0",
+      "image": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "mem_limit": "268435456",
       "networks": {
         "mcp-private": null
       },
       "pids_limit": 64,
+      "pull_policy": "never",
       "read_only": true,
       "restart": "unless-stopped",
       "security_opt": [

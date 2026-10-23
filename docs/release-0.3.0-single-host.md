@@ -1,186 +1,139 @@
-# Inspector 0.3.0 single-host pilot runbook
+# Inspector 0.3.0 single-host deployment
 
-This is an operator procedure for a future, explicitly authorized pilot. This
-PR does not authorize deployment. Production 0.2.0 and its OpenAI Tunnel stay
-running until the operator approves the steps marked **production** below.
+The observed production Inspector is 0.3.0. The running image ID was reported as
+`sha256:fc22d3119b70c4a4f37a78dcd17a393c8370d0b9c41be9000a36ea4fb30c2479`.
+This is operator-reported context, not a CI assertion about the live host. The
+current deployment needed a temporary Compose override for its SSH target and
+host label. This procedure moves those values into one permanent, private
+Compose env file. It changes only the Inspector container. Do not copy the
+observed address, target, or credentials into the repository.
 
-## Release contract
+## Inspect and prepare
 
-- Source: one full Git commit SHA from this PR after review and merge.
-- Application: MCP version `0.3.0`; image tag
-  `infrastructure-inspector:0.3.0`; OCI version label `0.3.0`; OCI revision
-  label equal to the source SHA.
-- Image identity: the full `sha256:` image ID recorded from `docker image
-  inspect`; a tag alone is not an identity. Record a registry digest as well
-  if the image is transferred through a registry. The base Python image and
-  OpenAI Tunnel image are pinned by digest in source.
-- Dispatcher: the exact `host/sg-audit-dispatch.py` bytes in the release
-  commit, independently installed as the SSH account's ForceCommand.
-- Deployment: `compose.yaml` only, with existing single-host `.env` values.
-  Do not use `compose.multi.yaml`, `INSPECTOR_HOST_MODE=multi`, or an SSH egress
-  bridge for this pilot.
+Use a reviewed checkout containing this `compose.yaml` and preflight on the
+deployment host. The checkout's `inspector/` source is not used to build the
+production image. Preserve the existing tunnel container, network, and secrets.
+Choose an operator-owned directory outside Git for `compose.yaml` and `.env`;
+copy the reviewed Compose file there. Copy `.env.example` there as `.env`, then
+replace *every* example value with the intended deployment values, including
+`INSPECTOR_IMAGE_ID`, `INSPECTOR_SSH_TARGET`, `INSPECTOR_HOST_LABEL`, all three
+secret file paths, network subnet/gateway, and Tunnel ID. The image ID must be
+the full locally available ID of the tested 0.3.0 image. Keep the env file
+private and use absolute paths for secret files. Docker Compose interpolates
+these variables from the explicit `--env-file`; a container `env_file` would
+not supply values for Compose interpolation. Do not use a temporary override.
 
-The pinned base image and fully versioned Python wheel lock constrain build
-inputs; installation rejects source distributions and unlisted dependencies.
-The image build normalizes root-owned application modules and their directory
-permissions. Restrictive source checkouts, including files staged with mode
-`0600` under `umask 077`, are supported. CI builds such a context with both
-BuildKit and the legacy builder, then runs the release import probe as UID/GID
-65533:65533 with no network and a read-only filesystem.
-The full image ID is the final artifact identity because Debian package indexes
-and wheel repositories remain mutable.
-Retain the verified artifact for deployment and rollback; rebuilding the same
-commit later is not guaranteed to produce the same bytes. No image is
-published or deployed automatically.
-
-## 1. Local release preparation (safe for CI or a disposable workstation)
-
-Start from a clean checkout of the reviewed release commit. Use a dedicated
-directory outside the public repository for local `.env`, staged dispatcher,
-and recorded image IDs. Never paste secret contents into logs or PR comments.
-The production configuration is operator-owned and must not be copied into CI.
-
-```sh
-release_revision=$(git rev-parse HEAD)
-test -z "$(git status --porcelain)"
-bash scripts/ci.sh
-docker build --pull=false --build-arg SOURCE_REVISION="$release_revision" \
-  -f inspector/Dockerfile -t infrastructure-inspector:0.3.0 inspector
-release_image_id=$(docker image inspect --format '{{.Id}}' infrastructure-inspector:0.3.0)
-printf 'revision=%s image=%s\n' "$release_revision" "$release_image_id"
-```
-
-For an operator workstation with the deployment `.env` and a **locally staged**
-copy of the intended dispatcher, run this local-only preflight. It invokes
-`docker compose config`, inspects the local image, and runs an isolated Python
-probe with `--network none`; it does not read secret contents, connect to SSH,
-restart containers, or modify the host. A failed check stops the upgrade.
-It compares the effective deployment Compose runtime settings with the approved
-single-host Compose file in the clean release commit. Operator-specific paths,
-SSH target and label, Tunnel ID, Compose project location, and private subnet
-and gateway may differ; missing service wiring or weaker isolation fails.
-
-```sh
-python3 scripts/release_preflight.py \
-  --revision "$release_revision" --image-id "$release_image_id" \
-  --compose-file /path/to/private/compose.yaml \
-  --env-file /path/to/private/.env \
-  --dispatcher /path/to/staged/sg-audit-dispatch.py
-```
-
-The staged dispatcher must have the same SHA-256 as the reviewed release file.
-An old dispatcher fails this preflight. The separate unit, MCP, and disposable
-SSH tests establish that all four legacy commands still work and unknown
-commands are denied. The preflight does not attest the live target's SSH
-configuration or installed utilities.
-
-## 2. Production preparation (explicit human authorization required)
-
-Confirm the pilot's approved host, maintenance window, operator access, and
-rollback owner. Confirm the current Tunnel and 0.2.0 tools work before any
-change. Confirm the target account remains unprivileged and its `sshd`
-configuration enforces `ForceCommand`, public-key authentication, disabled
-forwarding and PTY, and the existing allowed key. Check that the 0.3.0
-dispatcher file and every fixed utility it calls are available on the target.
-Do not expand SSH privileges or change credentials as part of this release.
-
-Record the live image ID, container ID, Compose file, private `.env`, SSH
-dispatcher, and SSH account configuration in a private backup directory with
-restricted permissions. The following commands illustrate the capture; adjust
-paths to the approved deployment and target. Do not place backups in Git.
+Before changing anything, record the running Inspector container ID, image ID,
+effective Compose configuration, private env file, and the tunnel container ID
+in an operator-owned backup directory. Capture the *current* configuration even
+if it used an override. Keep the old image locally (or `docker image save` it)
+and verify that `docker image inspect` still resolves the saved ID. Preserve the
+old configuration files exactly. Do not use a mutable tag as the rollback
+identity. If the reported image ID differs from the live one, investigate and
+use the verified live state; do not assume the report is current.
 
 ```sh
 umask 077
-backup_dir=/private/backup/location
+backup_dir=/private/inspector-backup
 mkdir -p "$backup_dir"
-docker compose --env-file /private/deployment/.env -f /private/deployment/compose.yaml \
-  ps --format json > "$backup_dir/compose-ps.json"
-docker inspect --format '{{.Image}}' "$(docker compose --env-file /private/deployment/.env \
-  -f /private/deployment/compose.yaml ps -q inspector)" > "$backup_dir/inspector-image-id"
-cp -p /private/deployment/compose.yaml /private/deployment/.env "$backup_dir/"
-# Back up the installed ForceCommand and relevant sshd/authorized-keys configuration
-# using the approved host administration channel into this private directory.
+# Set compose_file and env_file to the permanent candidate files.
+compose_file=/private/deployment/compose.yaml
+env_file=/private/deployment/.env
+# Obtain these IDs from the existing deployment's exact Compose invocation.
+old_container=REPLACE_WITH_VERIFIED_INSPECTOR_CONTAINER_ID
+tunnel_before=REPLACE_WITH_VERIFIED_TUNNEL_CONTAINER_ID
+test -n "$old_container"
+docker inspect --format '{{.Image}}' "$old_container" > "$backup_dir/inspector-image-id"
+docker image inspect "$(cat "$backup_dir/inspector-image-id")" >/dev/null
+test -n "$tunnel_before"
+# Save the existing deployment's original Compose, env, and override files here.
+# Separately retain the candidate compose_file and env_file for deployment.
 ```
 
-Ensure the old image remains locally available by its recorded ID. If it may
-be pruned, give that **existing** image a local rollback tag or save it in the
-private backup directory. Verify the saved image ID before replacement. Record
-the current dispatcher SHA-256 and preserve its file mode and ownership.
-Never depend on the mutable `0.2.0` tag without checking its image ID.
+Do not treat candidate configuration as a backup of the old deployment. If the
+old deployment used an override, save it and the exact old Compose invocation.
+Verify both recorded container IDs with `docker inspect` independently.
 
-## 3. Upgrade order (explicit human authorization required)
+## Validate before recreation
 
-1. Stage and validate the new dispatcher on the target. Confirm its SHA-256
-   matches `host/sg-audit-dispatch.py` from the reviewed commit. Install it
-   atomically with the original owner and executable mode, keeping a private
-   copy of the old file. Do not change the ForceCommand path, account, key,
-   forwarding, or PTY rules.
-2. While **0.2.0 Inspector is still running**, invoke each legacy operation
-   (`identity`, `uptime`, `listeners`, `services`) through the existing access
-   path. `services` may report a diagnostic error if systemd is unavailable;
-   an SSH authorization denial or transport failure is a stop condition.
-   Check that an arbitrary SSH command is still denied with exit 126 through
-   a controlled operator test. Do not advance on a compatibility failure.
-3. Make the verified 0.3.0 image ID available on the deployment host and
-   confirm its OCI version/revision labels. Confirm the single-host Compose
-   file resolves to the approved image, secrets and network. Run the preflight
-   again on that host against the staged dispatcher, **the exact Compose
-   file used by the replacement command**, and recorded image ID.
-4. Replace **only** the Inspector container using the approved Compose file:
+Read the candidate image's OCI revision label and independently verify that it
+identifies the tested release. Provide that full revision SHA and the full image
+ID to the preflight. The preflight checks Compose interpolation, required
+single-host values, safe nonempty secret bind files, private network, tunnel
+contract, non-root/read-only runtime, no build path, local image identity,
+version/revision labels, and an isolated SSH-command probe. It does not read
+secret contents, contact production SSH, or change containers. It compares the
+candidate's effective Compose configuration with the reviewed template while
+allowing operator-specific values. A missing or blank SSH target stops before
+any recreation. The image ID in `.env` must match `--image-id` exactly.
 
-   ```sh
-   docker compose --env-file /private/deployment/.env \
-     -f /private/deployment/compose.yaml up -d --no-deps --no-build inspector
-   ```
+```sh
+image_id=$(docker image inspect --format '{{.Id}}' "$(sed -n 's/^INSPECTOR_IMAGE_ID=//p' "$env_file")")
+revision=$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image_id")
+python3 scripts/release_preflight.py --revision "$revision" --image-id "$image_id" \
+  --compose-file "$compose_file" --env-file "$env_file"
+```
 
-   Confirm `docker inspect` reports the intended image ID, UID/GID 65533,
-   read-only root, dropped capabilities, no privileged mode, no Docker socket,
-   and no published port. Confirm Inspector starts and the Tunnel remains
-   connected. Do not recreate or reconfigure `tunnel-client`.
-5. Through the existing OpenAI Tunnel, perform read-only smoke calls:
-   `inspector_status`, `list_hosts` (only `default`), `list_checks`,
-   `inspect_server(identity)`, and `inspect(system.identity)` and
-   `inspect(system.uptime)`. Check result status, host label, timestamp,
-   non-root identity, and absence of diagnostic errors. Do not put host output
-   in public CI or the PR. Test one unknown check and unknown host ID; both
-   must be rejected without SSH execution. A local health check alone does
-   not establish Tunnel access.
+If the preflight fails, stop. Resolve any discrepancy between checkout, image labels,
+Compose, and the running container before deployment. The preflight cannot
+establish that the live dispatcher, SSH account, target utilities, or Tunnel
+actually work; use the smoke calls below.
 
-## 4. Immediate rollback conditions and order
+## Deploy and verify
 
-Rollback immediately for incorrect image/revision, failed preflight, lost
-Tunnel access, failed legacy diagnostics, denied intended checks, unexpected
-host routing, missing secret mounts, SSH restriction drift, elevated container
-privileges, a Docker socket mount, or exposure of sensitive output. Treat
-ambiguous partial diagnostics as a failure until investigated.
+Only after the operator authorizes the prepared change, use the *same* Compose
+and env files. `--no-deps` prevents tunnel recreation. `--no-build` and
+`--pull never` prevent source rebuilds or registry substitution. Compose uses
+the verified immutable image ID from `.env`.
 
-With explicit operator authorization, first restore the **recorded 0.2.0
-image ID** and original single-host Compose configuration, then recreate only
-Inspector. Verify the old MCP tools through the Tunnel. Next restore the
-backed-up 0.2.0 dispatcher atomically with its original owner and mode, and
-verify the four legacy operations again. This order prevents a 0.3.0 Inspector
-from sending new check IDs to an old dispatcher during rollback. Keep the
-verified 0.3.0 artifact and evidence for investigation; do not retry blindly.
+```sh
+docker compose --env-file "$env_file" -f "$compose_file" \
+  up -d --no-deps --no-build --pull never inspector
+new_container=$(docker compose --env-file "$env_file" -f "$compose_file" ps -q inspector)
+test -n "$new_container"
+test "$(docker inspect --format '{{.Image}}' "$new_container")" = "$image_id"
+test "$(docker compose --env-file "$env_file" -f "$compose_file" ps -q tunnel-client)" = "$tunnel_before"
+```
 
-For the original deployment paths shown above, the container portion is:
+Inspect the new container's UID/GID, read-only root, dropped capabilities,
+no-new-privileges, mounts, networks, and absence of published ports and Docker
+socket. Verify the Tunnel remains connected. Through the existing MCP access
+path, call `inspector_status`, `list_hosts`, `list_checks`, `inspect_server`,
+`inspect`, and `inspect_batch`; include real `identity` and `uptime` SSH
+checks and rejection of an unknown check and host. Confirm successful result
+status, expected host label, timestamps, and non-root identity. Running state
+or empty logs alone are not evidence of successful diagnostics. Never put host
+output or credentials in public CI or PR logs. CI exercises a disposable SSH
+stack; it cannot verify the production Tunnel or host.
+
+## Roll back on any failed verification
+
+Restore the exact backed-up Compose and env files (and any original override
+file), confirm the old image ID remains available, then recreate **only**
+Inspector with the old invocation and `--no-deps --no-build --pull never`.
+Append a private final Compose override that selects the recorded old image ID,
+so an old mutable tag cannot select a different image. This override exists
+only for rollback; routine deployment uses the permanent env file alone.
+For the normal permanent single-file configuration:
 
 ```sh
 old_image_id=$(cat "$backup_dir/inspector-image-id")
-docker image inspect --format '{{.Id}}' "$old_image_id"
-docker image tag "$old_image_id" infrastructure-inspector:0.2.0
+docker image inspect "$old_image_id" >/dev/null
+printf 'services:\n  inspector:\n    image: %s\n' "$old_image_id" > "$backup_dir/rollback-image.yaml"
 cp -p "$backup_dir/compose.yaml" "$backup_dir/.env" /private/deployment/
 docker compose --env-file /private/deployment/.env \
-  -f /private/deployment/compose.yaml up -d --no-deps --no-build inspector
-test "$(docker inspect --format '{{.Image}}' "$(docker compose \
-  --env-file /private/deployment/.env -f /private/deployment/compose.yaml \
-  ps -q inspector)")" = "$old_image_id"
+  -f /private/deployment/compose.yaml -f "$backup_dir/rollback-image.yaml" \
+  up -d --no-deps --no-build --pull never inspector
+rolled_back=$(docker compose --env-file /private/deployment/.env \
+  -f /private/deployment/compose.yaml -f "$backup_dir/rollback-image.yaml" ps -q inspector)
+test "$(docker inspect --format '{{.Image}}' "$rolled_back")" = "$old_image_id"
+test "$(docker compose --env-file /private/deployment/.env \
+  -f /private/deployment/compose.yaml -f "$backup_dir/rollback-image.yaml" \
+  ps -q tunnel-client)" = "$tunnel_before"
 ```
 
-Restore the dispatcher using the approved host administration channel from
-the private backup. Verify its recorded checksum, ownership, and mode before
-the four legacy smoke calls. Escalate if the rollback image or dispatcher
-cannot be verified; do not substitute an unverified tag or file.
-
-The current MCP transport has **no application-level OAuth**. Adding hosts,
-multi-host SSH egress, Docker/Veeam or other sensitive privileged diagnostics,
-or broader access requires a separate security review and explicit approval.
+For a prior deployment that used a temporary override, use its backed-up
+original files and exact Compose invocation, appending the rollback image
+override last. Verify legacy MCP-to-SSH
+checks through the Tunnel after rollback. Stop and investigate if the old image
+or configuration is unavailable; an unverified tag is not a rollback.
