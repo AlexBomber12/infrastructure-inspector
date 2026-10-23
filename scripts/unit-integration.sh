@@ -27,3 +27,7 @@ docker run --rm \
   -q -p no:cacheprovider /opt/tests/test_inspector.py /opt/tests/test_protocol.py /opt/tests/test_release_preflight.py \
   --cov=/opt/ssh-inspector --cov=/opt/host --cov=/opt/scripts --cov-branch \
   --cov-report=term-missing --cov-fail-under=100
+echo 'Running protected secret mount integration'
+python3 tests/test_release_secret_mounts.py
+echo 'Running disposable release rollback integration'
+bash tests/test_release_rollback.sh

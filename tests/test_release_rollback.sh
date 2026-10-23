@@ -55,12 +55,12 @@ tunnel_hash=$(docker inspect --format '{{index .Config.Labels "com.docker.compos
 if bash scripts/release_snapshot.sh capture "$fixture/missing-env" "$fixture/not-present.env" "$old_container" "$tunnel" >"$fixture/missing-env.log" 2>&1; then
   echo 'Missing original env file passed snapshot capture' >&2; exit 1
 fi
-rg -q 'env file is missing' "$fixture/missing-env.log"
+grep -q 'env file is missing' "$fixture/missing-env.log"
 mv "$fixture/override.yaml" "$fixture/override.saved"
 if bash scripts/release_snapshot.sh capture "$fixture/missing-snapshot" "$fixture/original.env" "$old_container" "$tunnel" >"$fixture/missing-override.log" 2>&1; then
   echo 'Missing original override passed snapshot capture' >&2; exit 1
 fi
-rg -q 'original inspector Compose file 2 is missing' "$fixture/missing-override.log"
+grep -q 'original inspector Compose file 2 is missing' "$fixture/missing-override.log"
 mv "$fixture/override.saved" "$fixture/override.yaml"
 other_project="${project}-other"
 docker compose --env-file "$fixture/original.env" -f "$fixture/base.yaml" -f "$fixture/override.yaml" -p "$other_project" up -d --no-build --pull never inspector tunnel-client >/dev/null
@@ -68,7 +68,7 @@ other_tunnel=$(docker compose --env-file "$fixture/original.env" -f "$fixture/ba
 if bash scripts/release_snapshot.sh capture "$fixture/wrong-project" "$fixture/original.env" "$old_container" "$other_tunnel" >"$fixture/wrong-project.log" 2>&1; then
   echo 'Wrong Compose project passed snapshot capture' >&2; exit 1
 fi
-rg -q 'Compose project mismatch' "$fixture/wrong-project.log"
+grep -q 'Compose project mismatch' "$fixture/wrong-project.log"
 docker compose --env-file "$fixture/original.env" -f "$fixture/base.yaml" -f "$fixture/override.yaml" -p "$other_project" down --remove-orphans >/dev/null
 mkdir "$fixture/wrapper"
 cat > "$fixture/wrapper/docker" <<'EOF_DOCKER'
@@ -85,7 +85,7 @@ if DOCKER_REAL=$(command -v docker) PATH="$fixture/wrapper:$PATH" \
   "$fixture/original.env" "$old_container" "$tunnel" >"$fixture/wrong-order.log" 2>&1; then
   echo 'Wrong Compose file order passed snapshot capture' >&2; exit 1
 fi
-rg -q 'configuration differs from the running container' "$fixture/wrong-order.log"
+grep -q 'configuration differs from the running container' "$fixture/wrong-order.log"
 bash scripts/release_snapshot.sh capture "$fixture/snapshot" "$fixture/original.env" "$old_container" "$tunnel"
 bash scripts/release_snapshot.sh verify "$fixture/snapshot"
 bash scripts/release_snapshot.sh verify-current "$fixture/snapshot"
@@ -98,7 +98,7 @@ mv "$fixture/snapshot/inspector-file-02.yaml" "$fixture/snapshot/inspector-file-
 if bash scripts/release_snapshot.sh verify "$fixture/snapshot" >"$fixture/incomplete.log" 2>&1; then
   echo 'Incomplete snapshot passed readiness' >&2; exit 1
 fi
-rg -q 'snapshot files are missing or changed' "$fixture/incomplete.log"
+grep -q 'snapshot files are missing or changed' "$fixture/incomplete.log"
 mv "$fixture/snapshot/inspector-file-02.missing" "$fixture/snapshot/inspector-file-02.yaml"
 # An unavailable previous image ID is rejected without changing containers.
 cp -a "$fixture/snapshot" "$fixture/unavailable"
@@ -107,7 +107,7 @@ printf 'sha256:%064d\n' 0 > "$fixture/unavailable/inspector-image-id"
 if bash scripts/release_snapshot.sh verify "$fixture/unavailable" >"$fixture/unavailable.log" 2>&1; then
   echo 'Unavailable old image passed readiness' >&2; exit 1
 fi
-rg -q 'previous image is unavailable' "$fixture/unavailable.log"
+grep -q 'previous image is unavailable' "$fixture/unavailable.log"
 # Replace only Inspector, simulate failed post-deployment verification, then roll back.
 cat > "$fixture/candidate.yaml" <<EOF_CANDIDATE
 services:
@@ -126,9 +126,9 @@ bash scripts/release_snapshot.sh verify-current "$fixture/candidate-snapshot"
 if bash scripts/release_snapshot.sh verify-current "$fixture/snapshot" >"$fixture/stale-inspector.log" 2>&1; then
   echo 'Replaced Inspector passed current-deployment verification' >&2; exit 1
 fi
-rg -q 'captured Inspector is no longer the current deployment' "$fixture/stale-inspector.log"
+grep -q 'captured Inspector is no longer the current deployment' "$fixture/stale-inspector.log"
 # A wrong host label stands in for a failed MCP post-deployment verification.
-if docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$candidate" | rg -q '^INSPECTOR_HOST_LABEL=original$'; then
+if docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$candidate" | grep -q '^INSPECTOR_HOST_LABEL=original$'; then
   echo 'Expected candidate verification failure' >&2; exit 1
 fi
 bash scripts/release_snapshot.sh verify "$fixture/snapshot"
@@ -138,7 +138,7 @@ test "$(docker inspect --format '{{.Image}}' "$restored")" = "$old_image"
 test "$(docker inspect --format '{{.Config.User}}' "$restored")" = '65533:65533'
 test "$(docker inspect --format '{{.HostConfig.ReadonlyRootfs}}' "$restored")" = true
 test "$(docker inspect --format '{{.HostConfig.CapDrop}}' "$restored")" = '[ALL]'
-docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$restored" | rg -q '^INSPECTOR_HOST_LABEL=original$'
+docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$restored" | grep -q '^INSPECTOR_HOST_LABEL=original$'
 test "$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}' "$restored")" = "$project"
 test "$(docker inspect --format '{{index .Config.Labels "com.docker.compose.config-hash"}}' "$tunnel")" = "$tunnel_hash"
 test "$(docker compose -f "$fixture/snapshot/effective.json" -f "$fixture/snapshot/rollback-image.yaml" -p "$project" ps -q tunnel-client)" = "$tunnel"

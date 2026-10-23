@@ -19,7 +19,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Run unit, protocol and coverage gate
+      - name: Run unit and deployment integration gates
         run: bash scripts/unit-integration.sh
       - name: Verify restrictive-source image builds
         run: bash tests/test_restrictive_image_permissions.sh

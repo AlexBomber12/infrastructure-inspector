@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "inspector"))
 from hosts import LABEL, valid_target
@@ -36,6 +37,26 @@ from hosts import Host
 modules = [server, catalog, bounded, hosts]
 command = server._ssh_command('identity', Host('default', 'fixture', 'audit@fixture', '/tmp/key', '/tmp/known'))
 print(json.dumps({'modules': [m.__file__ for m in modules], 'command': command}))
+"""
+SECRET_META_PROBE = """import json, os, stat, sys
+try:
+    entry = os.lstat('/source-parent/' + sys.argv[1])
+    if not stat.S_ISREG(entry.st_mode) or entry.st_size == 0:
+        sys.exit(1)
+    print(json.dumps([entry.st_dev, entry.st_ino]))
+except OSError:
+    sys.exit(1)
+"""
+SECRET_ACCESS_PROBE = """import json, os, stat, sys
+try:
+    fd = os.open('/source-file', os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    mounted = os.fstat(fd)
+    os.close(fd)
+    if not stat.S_ISREG(mounted.st_mode) or mounted.st_size == 0:
+        sys.exit(1)
+    print(json.dumps([mounted.st_dev, mounted.st_ino]))
+except OSError:
+    sys.exit(1)
 """
 
 
@@ -130,9 +151,8 @@ def validate_compose(config, approved, expected_id):
             require(mount.get("bind", {}).get("create_host_path") is not True,
                     "Secret mounts must not create host paths")
             source = Path(mount["source"])
-            require(source.is_absolute() and source.is_file() and not source.is_symlink()
-                    and source.stat().st_size > 0,
-                    f"Required local secret file missing: {mount['target']}")
+            require(source.is_absolute() and source.name not in ("", ".", ".."),
+                    f"Required secret source is invalid: {mount['target']}")
             require("docker.sock" not in mount["source"] and "docker.sock" not in mount["target"],
                     "Docker socket mount is forbidden")
     tunnel = services["tunnel-client"]
@@ -146,6 +166,58 @@ def validate_compose(config, approved, expected_id):
             "Tunnel ID is missing or unsafe")
     require(_runtime_contract(config) == _runtime_contract(approved),
             "Release Compose runtime contract differs from approved configuration")
+
+
+def validate_secrets(config, image_id):
+    """Use Docker's bind resolution; host-side stat cannot cross protected parents."""
+    for service_name, targets in SECRET_TARGETS.items():
+        service = config["services"][service_name]
+        uid, gid = service["user"].split(":")
+        for mount in service["volumes"]:
+            source = Path(mount["source"])
+            target = mount["target"]
+            require(target in targets and source.is_absolute()
+                    and not any(char in str(source) for char in ',\n\r"'),
+                    f"Required secret source is invalid: {target}")
+            identities = []
+            message = (f"Required secret is missing, unsafe, empty, or inaccessible "
+                       f"to {service_name}: {target}")
+            for user, bind, script, args in (
+                ("0:0", f"type=bind,src={source.parent},dst=/source-parent,readonly",
+                 SECRET_META_PROBE, (source.name,)),
+                (f"{uid}:{gid}", f"type=bind,src={source},dst=/source-file,readonly",
+                 SECRET_ACCESS_PROBE, ())
+            ):
+                probe_name = f"release-preflight-{uuid.uuid4().hex}"
+                command = ("docker", "run", "--rm", "--name", probe_name,
+                     "--network", "none", "--read-only",
+                     "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
+                     "--pids-limit", "32", "--memory", "128m", "--user", user,
+                     "--mount", bind, "--entrypoint", "python", image_id,
+                     "-c", script, *args)
+                try:
+                    result = subprocess.run(command, cwd=ROOT, capture_output=True,
+                                            text=True, check=False, timeout=30)
+                except subprocess.TimeoutExpired:
+                    try:
+                        cleanup = subprocess.run(
+                            ("docker", "container", "rm", "--force", probe_name),
+                            cwd=ROOT, capture_output=True, timeout=5, check=False)
+                    except (OSError, subprocess.TimeoutExpired):
+                        cleanup = None
+                    if cleanup is None or cleanup.returncode != 0:
+                        raise ValueError(
+                            f"{message} (probe timed out; cleanup unverified for disposable "
+                            f"container {probe_name}; inspect or remove that container manually)") from None
+                    raise ValueError(f"{message} (probe timed out; disposable container "
+                                     f"{probe_name} removed)") from None
+                require(result.returncode == 0, message)
+                identity = json.loads(result.stdout)
+                require(isinstance(identity, list) and len(identity) == 2
+                        and all(isinstance(value, int) for value in identity), message)
+                identities.append(identity)
+            require(identities[0] == identities[1],
+                    f"Required secret mount source changed or is unsafe: {target}")
 
 
 def validate_image(metadata, expected_id, expected_revision, probe):
@@ -207,6 +279,7 @@ def main():
                                "--user", "65533:65533", "--entrypoint", "python",
                                metadata["Id"], "-c", PROBE))
         validate_image(metadata, args.image_id, args.revision, probe)
+        validate_secrets(config, metadata["Id"])
     except (ValueError, KeyError, IndexError, json.JSONDecodeError, OSError) as exc:
         print(f"Release preflight failed: {exc}", file=sys.stderr)
         return 1
