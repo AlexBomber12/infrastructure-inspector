@@ -1,7 +1,7 @@
 {
-  "default_host": "example-a",
+  "default_host": "default",
   "hosts": [
-    {"id": "example-a", "label": "Example A", "target": "audit@host-a.example.invalid"},
-    {"id": "example-b", "label": "Example B", "target": "audit@host-b.example.invalid"}
+    {"id": "default", "label": "Existing server", "target": "audit@host-a.example.invalid"},
+    {"id": "ai-server", "label": "Additional server", "target": "audit@host-b.example.invalid"}
   ]
 }

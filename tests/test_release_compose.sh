@@ -34,3 +34,20 @@ assert after["services"]["inspector"]["image"] == "sha256:" + "b" * 64
 after["services"]["inspector"]["image"] = before["services"]["inspector"]["image"]
 assert after == before
 PY
+docker compose --env-file .env.multi.example -f compose.multi.yaml -p fixture-running-project config --format json > "$tmp_dir/multi.json"
+python3 - "$tmp_dir/before.json" "$tmp_dir/multi.json" <<'PY'
+import json
+import sys
+single, multi = (json.load(open(path, encoding="utf-8")) for path in sys.argv[1:])
+assert single["name"] == multi["name"] == "fixture-running-project"
+assert single["services"]["tunnel-client"] == multi["services"]["tunnel-client"]
+inspector = multi["services"]["inspector"]
+assert inspector["image"].startswith("sha256:")
+assert len(inspector["image"]) == 71
+assert inspector["pull_policy"] == "never" and "build" not in inspector
+assert inspector["restart"] == "no"
+assert set(inspector["networks"]) == {"mcp-private", "ssh-egress"}
+assert set(multi["services"]["tunnel-client"]["networks"]) == {"mcp-private", "control-plane"}
+assert multi["networks"]["ssh-egress"]["enable_ipv6"] is False
+assert multi["networks"]["ssh-egress"]["driver_opts"]["com.docker.network.bridge.enable_icc"] == "false"
+PY

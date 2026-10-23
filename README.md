@@ -171,10 +171,9 @@ ForceCommand allowlist. The server-side dispatcher must be installed and
 configured separately on every additional Linux host.
 
 The multi-host Compose file keeps `mcp-private` internal and attaches only the
-Inspector to a separate `ssh-egress` bridge so it can reach external SSH
-targets. Restrict that bridge's outbound access to approved SSH destinations
-with operator-managed firewall rules before any production rollout. The
-tunnel client is not attached to `ssh-egress`.
+Inspector to a separate `ssh-egress` bridge. The reviewed migration and
+network policy procedure is in [docs/multi-host-migration.md](docs/multi-host-migration.md).
+The tunnel client is not attached to `ssh-egress`.
 
 To add a host, provision its dedicated unprivileged audit account, ForceCommand
 dispatcher, authorized client key, and verified SSH host key; add the matching
