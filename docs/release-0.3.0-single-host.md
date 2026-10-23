@@ -56,9 +56,10 @@ Verify both recorded container IDs with `docker inspect` independently.
 
 ## Validate before recreation
 
-Read the candidate image's OCI revision label and independently verify that it
-identifies the tested release. Provide that full revision SHA and the full image
-ID to the preflight. The preflight checks Compose interpolation, required
+Take the full expected image ID and revision SHA from the independently verified
+release record; do not derive expected values from the mutable image tag or
+from the local checkout. Confirm that this exact image is available on the
+deployment Docker Engine. Provide both values to the preflight. The preflight checks Compose interpolation, required
 single-host values, safe nonempty secret bind files, private network, tunnel
 contract, non-root/read-only runtime, no build path, local image identity,
 version/revision labels, and an isolated SSH-command probe. It does not read
@@ -68,8 +69,10 @@ allowing operator-specific values. A missing or blank SSH target stops before
 any recreation. The image ID in `.env` must match `--image-id` exactly.
 
 ```sh
-image_id=$(docker image inspect --format '{{.Id}}' "$(sed -n 's/^INSPECTOR_IMAGE_ID=//p' "$env_file")")
-revision=$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image_id")
+image_id=REPLACE_WITH_VERIFIED_FULL_SHA256_IMAGE_ID
+revision=REPLACE_WITH_VERIFIED_FULL_SOURCE_COMMIT_SHA
+test "$(docker image inspect --format '{{.Id}}' "$image_id")" = "$image_id"
+test "$(sed -n 's/^INSPECTOR_IMAGE_ID=//p' "$env_file")" = "$image_id"
 python3 scripts/release_preflight.py --revision "$revision" --image-id "$image_id" \
   --compose-file "$compose_file" --env-file "$env_file"
 ```

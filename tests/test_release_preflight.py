@@ -138,6 +138,8 @@ def test_runtime_service_drift_is_rejected(config, service, field, value):
     ("INSPECTOR_SSH_TARGET", "audit@host;id"),
     ("INSPECTOR_HOST_LABEL", None),
     ("INSPECTOR_HOST_LABEL", "  "),
+    ("INSPECTOR_HOST_LABEL", "bad\nlabel"),
+    ("INSPECTOR_HOST_LABEL", "x" * 65),
 ])
 def test_required_inspector_configuration_is_rejected_when_unsafe(config, field, value):
     approved = copy.deepcopy(config)

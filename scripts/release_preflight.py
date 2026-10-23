@@ -12,7 +12,7 @@ import subprocess
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "inspector"))
-from hosts import valid_target
+from hosts import LABEL, valid_target
 
 ROOT = Path(__file__).resolve().parents[1]
 VERSION = "0.3.0"
@@ -100,8 +100,8 @@ def validate_compose(config, approved, expected_id):
     require(valid_target(environment["INSPECTOR_SSH_TARGET"], legacy=True),
             "Inspector SSH target is missing or unsafe")
     label = environment["INSPECTOR_HOST_LABEL"]
-    require(isinstance(label, str) and bool(label.strip()),
-            "Inspector host label is missing")
+    require(isinstance(label, str) and LABEL.fullmatch(label) is not None,
+            "Inspector host label is missing or unsafe")
     require("ssh-egress" not in config.get("networks", {}) and
             set(inspector.get("networks", {})) == {"mcp-private"},
             "Single-host network changed")
