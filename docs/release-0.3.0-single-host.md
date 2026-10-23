@@ -22,6 +22,11 @@ running until the operator approves the steps marked **production** below.
 
 The pinned base image and fully versioned Python wheel lock constrain build
 inputs; installation rejects source distributions and unlisted dependencies.
+The image build normalizes root-owned application modules and their directory
+permissions. Restrictive source checkouts, including files staged with mode
+`0600` under `umask 077`, are supported. CI builds such a context with both
+BuildKit and the legacy builder, then runs the release import probe as UID/GID
+65533:65533 with no network and a read-only filesystem.
 The full image ID is the final artifact identity because Debian package indexes
 and wheel repositories remain mutable.
 Retain the verified artifact for deployment and rollback; rebuilding the same

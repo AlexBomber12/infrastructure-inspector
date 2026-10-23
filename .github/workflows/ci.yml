@@ -21,6 +21,8 @@ jobs:
           persist-credentials: false
       - name: Run unit, protocol and coverage gate
         run: bash scripts/unit-integration.sh
+      - name: Verify restrictive-source image builds
+        run: bash tests/test_restrictive_image_permissions.sh
 
   e2e_ssh:
     name: E2E SSH
