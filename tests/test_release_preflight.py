@@ -15,6 +15,10 @@ SCRIPT = Path(__file__).resolve().parents[1] / "scripts/release_preflight.py"
 spec = importlib.util.spec_from_file_location("release_preflight", SCRIPT)
 preflight = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(preflight)
+policy_spec = importlib.util.spec_from_file_location(
+    "network_policy_verify", SCRIPT.with_name("network_policy_verify.py"))
+policy_verify = importlib.util.module_from_spec(policy_spec)
+policy_spec.loader.exec_module(policy_verify)
 
 
 @pytest.fixture
@@ -27,6 +31,158 @@ def config(tmp_path):
             source.write_text("fixture")
             mount["source"] = str(source)
     return config
+
+
+@pytest.fixture
+def multi_config(tmp_path):
+    value = json.loads((Path(__file__).with_name("fixtures") /
+                        "compose-multi-effective.json").read_text())
+    for service in value["services"].values():
+        for mount in service.get("volumes", []):
+            mount["source"] = str(tmp_path / mount["target"].rsplit("/", 1)[-1])
+    return value
+
+
+def test_multi_host_compose_contract(multi_config):
+    approved = copy.deepcopy(multi_config)
+    image = multi_config["services"]["inspector"]["image"]
+    preflight.validate_compose(multi_config, approved, image)
+    inspector = multi_config["services"]["inspector"]
+    inspector["environment"] = {"INSPECTOR_HOST_MODE": "legacy"}
+    with pytest.raises(ValueError, match="Multi-host Inspector environment"):
+        preflight.validate_compose(multi_config, approved, image)
+    inspector["environment"] = {"INSPECTOR_HOST_MODE": "multi"}
+    inspector["dns"] = ["8.8.8.8"]
+    with pytest.raises(ValueError, match="DNS sink"):
+        preflight.validate_compose(multi_config, approved, image)
+    inspector["dns"] = ["127.0.0.254"]
+    inspector["networks"].pop("ssh-egress")
+    with pytest.raises(ValueError, match="Multi-host networks"):
+        preflight.validate_compose(multi_config, approved, image)
+    inspector["networks"] = copy.deepcopy(approved["services"]["inspector"]["networks"])
+    inspector["volumes"].pop()
+    with pytest.raises(ValueError, match="mounts differ"):
+        preflight.validate_compose(multi_config, approved, image)
+
+
+def test_multi_host_network_rejections(multi_config):
+    preflight.validate_multi_networks(multi_config)
+    cases = [
+        (("networks", "ssh-egress", "enable_ipv6"), True, "disable IPv6"),
+        (("networks", "ssh-egress", "driver_opts", "com.docker.network.bridge.enable_icc"), "true", "communication"),
+        (("networks", "ssh-egress", "driver_opts", "com.docker.network.bridge.name"), "bad bridge!", "bridge name"),
+        (("services", "inspector", "networks", "mcp-private", "mac_address"), "aa:bb:cc:dd:ee:ff", "private MAC"),
+        (("networks", "ssh-egress", "ipam", "config", 0, "subnet"), "bad", "Invalid multi-host"),
+        (("networks", "ssh-egress", "ipam", "config", 0, "subnet"), "172.30.240.0/24", "distinct IPv4"),
+        (("services", "inspector", "networks", "ssh-egress", "ipv4_address"), "172.30.241.1", "usable"),
+        (("services", "inspector", "networks", "ssh-egress", "ipv4_address"), "172.30.241.255", "usable"),
+    ]
+    for path, value, message in cases:
+        item = multi_config
+        for key in path[:-1]:
+            item = item[key]
+        key = path[-1]
+        old = item[key]
+        item[key] = value
+        with pytest.raises(ValueError, match=message):
+            preflight.validate_multi_networks(multi_config)
+        item[key] = old
+
+
+def test_multi_host_secret_probes(multi_config):
+    image = multi_config["services"]["inspector"]["image"]
+    with patch.object(preflight.subprocess, "run", return_value=SimpleNamespace(
+        returncode=0, stdout="[1,2]")) as calls:
+        preflight.validate_secrets(multi_config, image)
+    commands = [call.args[0] for call in calls.call_args_list]
+    assert len(commands) == 6
+    assert len({cmd[4] for cmd in commands}) == 6
+    for cmd in commands:
+        assert cmd[:4] == ("docker", "run", "--rm", "--name")
+        assert "--network" in cmd and cmd[cmd.index("--network") + 1] == "none"
+        assert "--read-only" in cmd and "--cap-drop" in cmd
+        assert "no-new-privileges:true" in cmd
+        assert "--pids-limit" in cmd and "--memory" in cmd
+        assert calls.call_args_list[commands.index(cmd)].kwargs["timeout"] == 30
+    assert any(preflight.SECRET_DIR_META_PROBE in cmd for cmd in commands)
+    assert any(preflight.MULTI_SECRET_PROBE in cmd for cmd in commands)
+    with patch.object(preflight.subprocess, "run", side_effect=[
+        SimpleNamespace(returncode=0, stdout="[1,2]"),
+        SimpleNamespace(returncode=0, stdout="[1,2]"),
+        SimpleNamespace(returncode=1, stdout="")
+    ]):
+        with pytest.raises(ValueError, match="inspector-hosts"):
+            preflight.validate_secrets(multi_config, image)
+    with patch.object(preflight.subprocess, "run", side_effect=[
+        SimpleNamespace(returncode=0, stdout="[1,2]") for _ in range(5)
+    ] + [SimpleNamespace(returncode=1, stdout="")]):
+        with pytest.raises(ValueError, match="registry or per-host credentials"):
+            preflight.validate_secrets(multi_config, image)
+
+
+def test_multi_host_migration_requires_current_snapshot(multi_config, tmp_path):
+    compose = tmp_path / "compose.yaml"
+    env = tmp_path / "deploy.env"
+    with pytest.raises(ValueError, match="fresh single-host"):
+        preflight.validate_migration(multi_config, compose, env, "project", None)
+    (tmp_path / "tunnel-container-id").write_text("tunnel-id")
+    (tmp_path / "project-name").write_text("project")
+    multi_config["name"] = "project"
+    attachments = {multi_config["networks"][name]["name"]: {}
+                   for name in ("mcp-private", "control-plane")}
+    private_network = {"Internal": True, "EnableIPv6": False,
+                       "IPAM": {"Config": [{"Subnet": "172.30.240.0/24",
+                                            "Gateway": "172.30.240.1"}]}}
+    with patch.object(preflight, "run", side_effect=["", "hash", "tunnel-client hash",
+                                                        json.dumps(attachments),
+                                                        json.dumps([private_network])]):
+        preflight.validate_migration(multi_config, compose, env, "project", tmp_path)
+    (tmp_path / "project-name").write_text("other")
+    with patch.object(preflight, "run", return_value=""):
+        with pytest.raises(ValueError, match="snapshot project"):
+            preflight.validate_migration(multi_config, compose, env, "project", tmp_path)
+    (tmp_path / "project-name").write_text("project")
+    with patch.object(preflight, "run", side_effect=["", "hash", "tunnel-client other"]):
+        with pytest.raises(ValueError, match="running Tunnel"):
+            preflight.validate_migration(multi_config, compose, env, "project", tmp_path)
+    multi_config["name"] = "other"
+    with patch.object(preflight, "run", side_effect=["", "hash", "tunnel-client hash",
+                                                        json.dumps(attachments)]):
+        with pytest.raises(ValueError, match="Migration project"):
+            preflight.validate_migration(multi_config, compose, env, "project", tmp_path)
+    multi_config["name"] = "project"
+    with patch.object(preflight, "run", side_effect=["", "hash", "tunnel-client hash",
+                                                        json.dumps({})]):
+        with pytest.raises(ValueError, match="network attachments"):
+            preflight.validate_migration(multi_config, compose, env, "project", tmp_path)
+    with patch.object(preflight, "run", side_effect=["", "hash", "tunnel-client hash",
+                                                        json.dumps(attachments),
+                                                        json.dumps([{**private_network, "EnableIPv6": True}])]):
+        with pytest.raises(ValueError, match="IPv4-only"):
+            preflight.validate_migration(multi_config, compose, env, "project", tmp_path)
+    with patch.object(preflight, "run", side_effect=["", "hash", "tunnel-client hash",
+                                                        json.dumps(attachments),
+                                                        json.dumps([{**private_network,
+                                                                     "IPAM": {"Config": []}}])]):
+        with pytest.raises(ValueError, match="address pool"):
+            preflight.validate_migration(multi_config, compose, env, "project", tmp_path)
+
+
+def test_multi_egress_subnet_rejects_existing_routes(multi_config):
+    with patch.object(preflight, "run", side_effect=[json.dumps([{"ifname": "eth0"}]),
+                                                      json.dumps([
+        {"dst": "default", "gateway": "192.0.2.1"},
+        {"dst": "172.30.240.0/24", "dev": "old-private"}
+    ])]):
+        preflight.validate_egress_route(multi_config)
+    with patch.object(preflight, "run", return_value=json.dumps([{"ifname": "br-insp-example"}])):
+        with pytest.raises(ValueError, match="bridge interface already exists"):
+            preflight.validate_egress_route(multi_config)
+    with patch.object(preflight, "run", side_effect=[json.dumps([]), json.dumps([
+        {"dst": "172.30.241.128/25", "dev": "vpn"}
+    ])]):
+        with pytest.raises(ValueError, match="overlaps"):
+            preflight.validate_egress_route(multi_config)
 
 
 def test_revision_validation():
@@ -155,6 +311,98 @@ def test_secret_probe_timeout_removes_only_its_disposable_container(
         assert f"cleanup unverified for disposable container {probe[4]}" in str(error.value)
         assert "inspect or remove that container manually" in str(error.value)
         assert "removed" not in str(error.value)
+
+
+@pytest.mark.parametrize("config_kind,probe_index,script", [
+    ("single", 0, preflight.SECRET_META_PROBE),
+    ("single", 1, preflight.SECRET_ACCESS_PROBE),
+    ("multi", 2, preflight.SECRET_DIR_META_PROBE),
+    ("multi", 5, preflight.MULTI_SECRET_PROBE),
+])
+@pytest.mark.parametrize("cleanup_kind", ["success", "nonzero", "oserror", "timeout"])
+def test_every_secret_probe_timeout_uses_targeted_cleanup(
+        config, multi_config, config_kind, probe_index, script, cleanup_kind):
+    selected = config if config_kind == "single" else multi_config
+    image_id = selected["services"]["inspector"]["image"]
+    seen = []
+
+    def docker_call(command, **kwargs):
+        seen.append((command, kwargs))
+        if command[:2] == ("docker", "run"):
+            if len([item for item, _ in seen if item[:2] == ("docker", "run")]) == probe_index + 1:
+                raise preflight.subprocess.TimeoutExpired(
+                    command, 30, output=b"SENSITIVE_BYTES", stderr=b"SENSITIVE_BYTES")
+            return SimpleNamespace(returncode=0, stdout="[1,2]")
+        if cleanup_kind == "oserror":
+            raise OSError("SENSITIVE_BYTES")
+        if cleanup_kind == "timeout":
+            raise preflight.subprocess.TimeoutExpired(command, 5, output=b"SENSITIVE_BYTES")
+        return SimpleNamespace(returncode=0 if cleanup_kind == "success" else 1,
+                               stdout=b"SENSITIVE_BYTES", stderr=b"SENSITIVE_BYTES")
+
+    with patch.object(preflight.subprocess, "run", side_effect=docker_call):
+        with pytest.raises(ValueError, match="probe timed out") as error:
+            preflight.validate_secrets(selected, image_id)
+    probes = [item for item, _ in seen if item[:2] == ("docker", "run")]
+    target = probes[probe_index]
+    assert script in target
+    assert len({probe[4] for probe in probes}) == len(probes)
+    assert seen[-1][0] == ("docker", "container", "rm", "--force", target[4])
+    assert seen[-1][1]["timeout"] == 5
+    assert "SENSITIVE_BYTES" not in str(error.value)
+    if cleanup_kind == "success":
+        assert f"container {target[4]} removed" in str(error.value)
+    else:
+        assert f"cleanup unverified for disposable container {target[4]}" in str(error.value)
+
+
+def test_secret_probe_start_error_is_sanitized(config):
+    image_id = config["services"]["inspector"]["image"]
+    with patch.object(preflight.subprocess, "run", side_effect=OSError("SENSITIVE_BYTES")):
+        with pytest.raises(ValueError, match="Docker probe could not start") as error:
+            preflight.validate_secrets(config, image_id)
+    assert "SENSITIVE_BYTES" not in str(error.value)
+
+
+def test_secret_probe_invalid_metadata_is_sanitized(config):
+    image_id = config["services"]["inspector"]["image"]
+    with patch.object(preflight.subprocess, "run", return_value=SimpleNamespace(
+        returncode=0, stdout="SENSITIVE_BYTES")):
+        with pytest.raises(ValueError, match="Required secret") as error:
+            preflight.validate_secrets(config, image_id)
+    assert "SENSITIVE_BYTES" not in str(error.value)
+
+
+def test_policy_json_verifier_rejects_mutation_and_normalizes_handles(monkeypatch, capsys):
+    args = ["10.240.1.2", "02:42:AC:F0:01:02", "10.240.1.1", "10.240.2.2",
+            "br-test-eg", "10.240.3.2"]
+    expected = policy_verify.expected_policy(*args[:5], args[5:])
+    actual = {"nftables": [{"metainfo": {"version": "1"}},
+                           *copy.deepcopy(expected)]}
+    for index, item in enumerate(actual["nftables"][1:]):
+        next(iter(item.values()))["handle"] = index + 1
+    assert policy_verify.verify_policy(actual, expected) is None
+    assert policy_verify.normalize("FD42::1") == "fd42::1"
+    assert policy_verify.normalize(22) == 22
+    assert policy_verify.normalize("br-test-eg") == "br-test-eg"
+    for mutate in (lambda policy: policy["nftables"].pop(),
+                   lambda policy: policy["nftables"].append({"set": {"name": "extra"}}),
+                   lambda policy: policy["nftables"][-1]["rule"].update(chain="other"),
+                   lambda policy: policy["nftables"][2]["chain"].update(prio=0)):
+        changed = copy.deepcopy(actual)
+        mutate(changed)
+        with pytest.raises(ValueError):
+            policy_verify.verify_policy(changed, expected)
+    import io
+    monkeypatch.setattr(policy_verify.sys, "stdin", io.StringIO(json.dumps(actual)))
+    assert policy_verify.main(args) == 0
+    monkeypatch.setattr(policy_verify.sys, "stdin", io.StringIO("{bad"))
+    assert policy_verify.main(args) == 1
+    assert "installed policy" in capsys.readouterr().err
+    monkeypatch.setattr(sys, "argv", [str(SCRIPT.with_name("network_policy_verify.py")), *args])
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(actual)))
+    with pytest.raises(SystemExit, match="0"):
+        runpy.run_path(str(SCRIPT.with_name("network_policy_verify.py")), run_name="__main__")
 
 
 def test_secret_mounts_must_belong_to_correct_service(config):
@@ -335,6 +583,35 @@ def test_cli_uses_exact_deployment_compose_file(tmp_path, capsys):
     assert "Deployment Compose file is missing" in capsys.readouterr().err
 
 
+def test_cli_multi_uses_multi_contract_and_snapshot(tmp_path, multi_config):
+    env_file = tmp_path / "private.env"
+    compose_file = tmp_path / "multi.yaml"
+    env_file.touch()
+    compose_file.touch()
+    multi_config["name"] = "running-project"
+    image_id = multi_config["services"]["inspector"]["image"]
+    args = ["release_preflight.py", "--revision", "a" * 40, "--image-id", image_id,
+            "--env-file", str(env_file), "--compose-file", str(compose_file),
+            "--project-name", "running-project", "--deployment-revision", "b" * 40,
+            "--snapshot", str(tmp_path)]
+    with patch.object(sys, "argv", args), patch.object(
+        preflight, "validate_revisions"
+    ), patch.object(preflight, "validate_compose") as validate_compose, patch.object(
+        preflight, "validate_image"
+    ), patch.object(preflight, "validate_secrets"), patch.object(
+        preflight, "validate_migration"
+    ) as validate_migration, patch.object(preflight, "run", side_effect=[
+        json.dumps(multi_config), json.dumps(multi_config),
+        json.dumps([{"Id": image_id}]), json.dumps({"modules": []})
+    ]) as commands, patch.object(preflight, "validate_egress_route") as route:
+        assert preflight.main() == 0
+    assert str(preflight.ROOT / ".env.multi.example") in commands.call_args_list[1].args
+    validate_compose.assert_called_once()
+    validate_migration.assert_called_once_with(
+        multi_config, compose_file, env_file, "running-project", tmp_path)
+    route.assert_called_once_with(multi_config)
+
+
 def test_cli_failure_is_reported_without_secret_contents(tmp_path, capsys):
     env_file = tmp_path / "private.env"
     compose_file = tmp_path / "compose.yaml"
@@ -349,6 +626,18 @@ def test_cli_failure_is_reported_without_secret_contents(tmp_path, capsys):
     ), patch.object(preflight, "run", side_effect=ValueError("invalid Compose")):
         assert preflight.main() == 1
     assert "invalid Compose" in capsys.readouterr().err
+    with patch.object(sys, "argv", args), patch.object(
+        preflight, "validate_revisions"
+    ), patch.object(preflight, "validate_compose"), patch.object(
+        preflight, "validate_image"
+    ), patch.object(preflight, "validate_secrets", side_effect=ValueError(
+        "probe timed out; cleanup unverified for disposable container release-preflight-test"
+    )), patch.object(preflight, "run", side_effect=[
+        json.dumps({"name": "running-project", "services": {}, "networks": {}}),
+        json.dumps({"services": {}}), json.dumps([{"Id": "sha256:" + "b" * 64}]),
+        json.dumps({"modules": []})]):
+        assert preflight.main() == 1
+    assert "cleanup unverified for disposable container" in capsys.readouterr().err
     with patch.object(sys, "argv", args), patch.object(
         preflight, "validate_revisions"
     ), patch.object(preflight, "run", return_value=json.dumps({"name": "wrong-project"})):

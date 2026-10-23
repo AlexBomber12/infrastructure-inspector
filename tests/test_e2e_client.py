@@ -41,10 +41,11 @@ async def call(name, args=None):
             return await session.call_tool(name, args or {})
 
 
-def ssh(command, *, key="/run/fixture/key", known_hosts="/run/fixture/known_hosts"):
+def ssh(command, *, key="/run/fixture/key", known_hosts="/run/fixture/known_hosts",
+        target="audit@sshd"):
     return subprocess.run(
         SSH + ["-i", key, "-o", f"UserKnownHostsFile={known_hosts}",
-               "audit@sshd", command], capture_output=True, timeout=15,
+               target, command], capture_output=True, timeout=15,
     )
 
 
@@ -66,7 +67,7 @@ def test_all_legacy_ssh_strings_reach_new_dispatcher():
 def test_new_catalog_check():
     result = payload(asyncio.run(call("inspect", {"check_id": "system.os"})))
     assert result["host"] == "e2e-host"
-    assert result["host_id"] == "a"
+    assert result["host_id"] == "default"
     assert result["check_id"] == "system.os"
     assert result["status"] == "success"
     assert result["exit_code"] == 0
@@ -82,7 +83,7 @@ def assert_result_schema(result, check_id):
         "output", "truncated", "stderr_truncated", "error",
     }
     assert result["host"] == "e2e-host"
-    assert result["host_id"] == "a"
+    assert result["host_id"] == "default"
     assert result["check_id"] == check_id
     assert datetime.fromisoformat(result["collected_at"]).utcoffset().total_seconds() == 0
     assert result["status"] in {"success", "error", "incomplete"}
@@ -155,7 +156,7 @@ def test_unsupported_check_rejected():
 
 def test_two_hosts_and_routing():
     hosts = payload(asyncio.run(call("list_hosts")))
-    assert hosts == [{"host_id": "a", "label": "e2e-host"},
+    assert hosts == [{"host_id": "default", "label": "e2e-host"},
                      {"host_id": "b", "label": "e2e-host-b"}]
     result = payload(asyncio.run(call("inspect", {"check_id": "system.identity", "host_id": "b"})))
     assert result["host_id"] == "b"
@@ -174,12 +175,19 @@ def test_cross_host_credentials_rejected():
     assert wrong_key.returncode == 255
     wrong_host_key = ssh("identity", known_hosts="/run/fixture/known_hosts_b")
     assert wrong_host_key.returncode == 255
+    wrong_second_key = ssh("identity", known_hosts="/run/fixture/known_hosts_b",
+                           target="audit@sshd-b")
+    assert wrong_second_key.returncode == 255
 
 
 def test_force_command_rejects_arbitrary_ssh():
     result = ssh("/usr/bin/id")
     assert result.returncode == 126
     assert b"DENIED" in result.stderr
+    second = ssh("/usr/bin/id", key="/run/fixture/key_b",
+                 known_hosts="/run/fixture/known_hosts_b", target="audit@sshd-b")
+    assert second.returncode == 126
+    assert b"DENIED" in second.stderr
 
 
 def test_wrong_key_rejected():

@@ -49,20 +49,20 @@ sed -e 's@/run/fixture/host_key@/run/fixture/host_key_b@' \
     -e 's@/run/fixture/authorized_keys@/run/fixture/authorized_keys_b@' \
     "$fixture/sshd_config" > "$fixture/sshd_config_b"
 cp "$fixture/key_b.pub" "$fixture/authorized_keys_b"
-mkdir -p "$fixture/hosts/a" "$fixture/hosts/b"
-cp "$fixture/key" "$fixture/hosts/a/identity"
-cp "$fixture/known_hosts" "$fixture/hosts/a/known_hosts"
+mkdir -p "$fixture/hosts/default" "$fixture/hosts/b"
+cp "$fixture/key" "$fixture/hosts/default/identity"
+cp "$fixture/known_hosts" "$fixture/hosts/default/known_hosts"
 cp "$fixture/key_b" "$fixture/hosts/b/identity"
 cp "$fixture/known_hosts_b" "$fixture/hosts/b/known_hosts"
 cat > "$fixture/host-registry.json" <<'EOF'
-{"default_host":"a","hosts":[{"id":"a","label":"e2e-host","target":"audit@sshd"},{"id":"b","label":"e2e-host-b","target":"audit@sshd-b"}]}
+{"default_host":"default","hosts":[{"id":"default","label":"e2e-host","target":"audit@sshd"},{"id":"b","label":"e2e-host-b","target":"audit@sshd-b"}]}
 EOF
 # Test credentials are confined to this disposable fixture. The Inspector user
 # must own its private key and SSH must see mode 0600.
 docker run --rm --network none --user 0:0 \
   --mount "type=bind,src=$fixture,dst=/fixture" \
   --entrypoint sh infrastructure-inspector:ci \
-  -c 'chown 65533:65533 /fixture/key /fixture/key_b /fixture/wrong_key /fixture/hosts/a/identity /fixture/hosts/b/identity; chmod 600 /fixture/key /fixture/key_b /fixture/wrong_key /fixture/hosts/a/identity /fixture/hosts/b/identity'
+  -c 'chown 65533:65533 /fixture/key /fixture/key_b /fixture/wrong_key /fixture/hosts/default/identity /fixture/hosts/b/identity; chmod 600 /fixture/key /fixture/key_b /fixture/wrong_key /fixture/hosts/default/identity /fixture/hosts/b/identity'
 cat > "$compose_file" <<EOF
 name: $project
 services:
@@ -138,3 +138,6 @@ docker compose -p "$project" -f "$compose_file" run --rm -T client \
 docker compose -p "$project" -f "$compose_file" stop sshd
 docker compose -p "$project" -f "$compose_file" run --rm -T client \
   pytest -q -p no:cacheprovider /opt/tests/test_e2e_client.py -k unavailable_ssh_server
+docker build -q -f tests/network.Dockerfile -t infrastructure-inspector-network-test:ci . >/dev/null
+docker run --rm --privileged --network none infrastructure-inspector-network-test:ci
+bash tests/test_docker_dns.sh

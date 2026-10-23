@@ -5,8 +5,9 @@ cd "$repo_root"
 fixture=$(mktemp -d)
 project="inspector-rollback-$$"
 cleanup() {
-  docker compose -p "$project" -f "$fixture/base.yaml" -f "$fixture/override.yaml" down --remove-orphans >/dev/null 2>&1 || true
-  docker compose -p "${project}-other" -f "$fixture/base.yaml" -f "$fixture/override.yaml" down --remove-orphans >/dev/null 2>&1 || true
+  docker compose --env-file "$fixture/original.env" -p "$project" -f "$fixture/base.yaml" -f "$fixture/override.yaml" down --remove-orphans >/dev/null 2>&1 || true
+  docker compose --env-file "$fixture/original.env" -p "${project}-other" -f "$fixture/base.yaml" -f "$fixture/override.yaml" down --remove-orphans >/dev/null 2>&1 || true
+  docker network rm "${project}_egress" >/dev/null 2>&1 || true
   rm -rf -- "$fixture"
 }
 trap cleanup EXIT
@@ -115,10 +116,15 @@ services:
     image: $new_image
     environment:
       INSPECTOR_HOST_LABEL: wrong-host
+    networks: [private, egress]
+networks:
+  egress:
+    driver: bridge
 EOF_CANDIDATE
 docker compose --env-file "$fixture/original.env" -f "$fixture/base.yaml" -f "$fixture/override.yaml" -f "$fixture/candidate.yaml" -p "$project" up -d --no-deps --no-build --pull never inspector >/dev/null
 candidate=$(docker compose --env-file "$fixture/original.env" -f "$fixture/base.yaml" -f "$fixture/override.yaml" -f "$fixture/candidate.yaml" -p "$project" ps -q inspector)
 test "$(docker inspect --format '{{.Image}}' "$candidate")" = "$new_image"
+docker network inspect "${project}_egress" >/dev/null
 test "$(docker compose --env-file "$fixture/original.env" -f "$fixture/base.yaml" -f "$fixture/override.yaml" -p "$project" ps -q tunnel-client)" = "$tunnel"
 bash scripts/release_snapshot.sh capture "$fixture/candidate-snapshot" "$fixture/original.env" "$candidate" "$tunnel"
 bash scripts/release_snapshot.sh verify "$fixture/candidate-snapshot"
@@ -144,6 +150,10 @@ test "$(docker inspect --format '{{index .Config.Labels "com.docker.compose.conf
 test "$(docker compose -f "$fixture/snapshot/effective.json" -f "$fixture/snapshot/rollback-image.yaml" -p "$project" ps -q tunnel-client)" = "$tunnel"
 docker inspect --format '{{json .NetworkSettings.Networks}}' "$restored" | python3 -c 'import json,sys; x=json.load(sys.stdin); assert len(x)==1 and next(iter(x)).endswith("_private")'
 test "$(docker network inspect --format '{{.Internal}}' "${project}_private")" = true
+docker network rm "${project}_egress" >/dev/null
+if docker network inspect "${project}_egress" >/dev/null 2>&1; then
+  echo 'Candidate egress network survived rollback' >&2; exit 1
+fi
 bash scripts/release_snapshot.sh capture "$fixture/after-rollback-snapshot" "$fixture/original.env" "$restored" "$tunnel"
 bash scripts/release_snapshot.sh verify "$fixture/after-rollback-snapshot"
 echo 'Disposable Inspector replacement and rollback passed'

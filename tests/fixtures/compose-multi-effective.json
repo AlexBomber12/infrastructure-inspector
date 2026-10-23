@@ -1,0 +1,138 @@
+{
+  "name": "infrastructure-inspector",
+  "networks": {
+    "control-plane": {
+      "name": "infrastructure-inspector_control-plane",
+      "driver": "bridge",
+      "ipam": {}
+    },
+    "mcp-private": {
+      "name": "infrastructure-inspector_mcp-private",
+      "driver": "bridge",
+      "ipam": {
+        "config": [
+          {
+            "subnet": "172.30.240.0/24",
+            "gateway": "172.30.240.1"
+          }
+        ]
+      },
+      "internal": true
+    },
+    "ssh-egress": {
+      "name": "infrastructure-inspector_ssh-egress",
+      "driver": "bridge",
+      "driver_opts": {
+        "com.docker.network.bridge.enable_icc": "false",
+        "com.docker.network.bridge.name": "br-insp-example"
+      },
+      "ipam": {
+        "config": [
+          {
+            "subnet": "172.30.241.0/24",
+            "gateway": "172.30.241.1"
+          }
+        ]
+      },
+      "enable_ipv6": false
+    }
+  },
+  "services": {
+    "inspector": {
+      "cap_drop": [
+        "ALL"
+      ],
+      "dns": [
+        "127.0.0.254"
+      ],
+      "cpus": 0.5,
+      "command": null,
+      "entrypoint": null,
+      "environment": {
+        "INSPECTOR_HOST_MODE": "multi"
+      },
+      "image": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "mem_limit": "268435456",
+      "networks": {
+        "mcp-private": {
+        "ipv4_address": "172.30.240.10",
+        "mac_address": "02:42:ac:1e:f0:0a"
+        },
+        "ssh-egress": {
+          "ipv4_address": "172.30.241.10"
+        }
+      },
+      "pids_limit": 64,
+      "pull_policy": "never",
+      "read_only": true,
+      "restart": "no",
+      "security_opt": [
+        "no-new-privileges:true"
+      ],
+      "tmpfs": [
+        "/tmp:rw,noexec,nosuid,nodev,size=16m"
+      ],
+      "user": "65533:65533",
+      "volumes": [
+        {
+          "type": "bind",
+          "source": "/fixture/private/host-registry.json",
+          "target": "/run/secrets/host-registry.json",
+          "read_only": true,
+          "bind": {}
+        },
+        {
+          "type": "bind",
+          "source": "/fixture/private/inspector-hosts",
+          "target": "/run/secrets/inspector-hosts",
+          "read_only": true,
+          "bind": {}
+        }
+      ]
+    },
+    "tunnel-client": {
+      "cap_drop": [
+        "ALL"
+      ],
+      "cpus": 0.5,
+      "command": [
+        "--control-plane.tunnel-id=tunnel_REPLACE_ME",
+        "--control-plane.api-key=file:/run/secrets/control-plane-api-key",
+        "--mcp.server-url=http://inspector:8000/mcp",
+        "--health.listen-addr=127.0.0.1:8080"
+      ],
+      "depends_on": {
+        "inspector": {
+          "condition": "service_started",
+          "required": true
+        }
+      },
+      "entrypoint": null,
+      "image": "ghcr.io/openai/tunnel-client@sha256:67b473b4bc23bc984e4a381752e9a2fa75649746edc06e46b27025611835c5c0",
+      "mem_limit": "268435456",
+      "networks": {
+        "control-plane": null,
+        "mcp-private": null
+      },
+      "pids_limit": 64,
+      "read_only": true,
+      "restart": "unless-stopped",
+      "security_opt": [
+        "no-new-privileges:true"
+      ],
+      "tmpfs": [
+        "/tmp:rw,noexec,nosuid,nodev,size=16m"
+      ],
+      "user": "65532:65532",
+      "volumes": [
+        {
+          "type": "bind",
+          "source": "/fixture/secrets/openai-api-key",
+          "target": "/run/secrets/control-plane-api-key",
+          "read_only": true,
+          "bind": {}
+        }
+      ]
+    }
+  }
+}

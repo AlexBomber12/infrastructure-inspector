@@ -35,6 +35,11 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      - name: Enable bridge packet filtering for disposable packet tests
+        run: |
+          sudo modprobe br_netfilter
+          sudo sysctl -w net.bridge.bridge-nf-call-iptables=1
+          test "$(cat /proc/sys/net/bridge/bridge-nf-call-iptables)" = 1
       - name: Run disposable SSH stack
         run: bash scripts/e2e.sh
 
