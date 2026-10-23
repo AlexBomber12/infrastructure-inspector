@@ -5,6 +5,30 @@ set -euo pipefail
 fail() { echo "Rollback snapshot failed: $*" >&2; exit 1; }
 label() { docker inspect --format "{{index .Config.Labels \"$2\"}}" "$1"; }
 image_id() { docker inspect --format '{{.Image}}' "$1"; }
+capture_sources() {
+  local service=$1 sources=$2
+  local -n args_ref=$3
+  local -a files
+  local file index
+  [[ -n $sources && $sources != '<no value>' ]] || fail "$service Compose file list is empty"
+  IFS=, read -r -a files <<< "$sources"
+  [[ ${#files[@]} -gt 0 ]] || fail "$service Compose file list is empty"
+  printf '%s\n' "$sources" > "$snapshot/$service-file-order"
+  printf '%s\n' "${#files[@]}" > "$snapshot/$service-file-count"
+  for index in "${!files[@]}"; do
+    file=${files[$index]}
+    [[ $file == /* && -f $file && ! -L $file ]] || fail "original $service Compose file $((index + 1)) is missing or unsafe"
+    args_ref+=(-f "$file")
+    cp -- "$file" "$snapshot/$service-file-$(printf '%02d' "$((index + 1))").yaml"
+  done
+}
+check_exports() {
+  local name
+  while read -r name _; do
+    [[ $name == NAME || -z $name ]] && continue
+    [[ ! ${!name+x} ]] || fail "unset exported $name before capturing the original configuration"
+  done < <(docker compose --env-file "$env_file" "$@" -p "$project" config --variables)
+}
 
 mode=${1:-}
 snapshot=${2:-}
@@ -33,47 +57,43 @@ if [[ $mode == capture ]]; then
   [[ $(docker inspect --format '{{.State.Running}}' "$tunnel") == true ]] || fail 'Tunnel is not running'
   project=$(label "$inspector" com.docker.compose.project)
   [[ -n $project && $project != '<no value>' && $(label "$tunnel" com.docker.compose.project) == "$project" ]] || fail 'Compose project mismatch'
-  sources=$(label "$inspector" com.docker.compose.project.config_files)
-  [[ -n $sources && $sources != '<no value>' && $(label "$tunnel" com.docker.compose.project.config_files) == "$sources" ]] || fail 'Compose file order mismatch'
-  IFS=, read -r -a files <<< "$sources"
-  [[ ${#files[@]} -gt 0 ]] || fail 'Compose file list is empty'
-  compose_args=()
-  for index in "${!files[@]}"; do
-    file=${files[$index]}
-    [[ $file == /* && -f $file && ! -L $file ]] || fail "original Compose file $((index + 1)) is missing or unsafe"
-    compose_args+=(-f "$file")
-    cp -- "$file" "$snapshot/file-$(printf '%02d' "$((index + 1))").yaml"
-  done
-  while read -r name _; do
-    [[ $name == NAME || -z $name ]] && continue
-    [[ ! ${!name+x} ]] || fail "unset exported $name before capturing the original configuration"
-  done < <(docker compose --env-file "$env_file" "${compose_args[@]}" -p "$project" config --variables)
+  inspector_sources=$(label "$inspector" com.docker.compose.project.config_files)
+  tunnel_sources=$(label "$tunnel" com.docker.compose.project.config_files)
+  inspector_args=()
+  tunnel_args=()
+  capture_sources inspector "$inspector_sources" inspector_args
+  capture_sources tunnel "$tunnel_sources" tunnel_args
+  check_exports "${inspector_args[@]}"
+  check_exports "${tunnel_args[@]}"
   cp -- "$env_file" "$snapshot/original.env"
   printf '%s\n' "$project" > "$snapshot/project-name"
   printf '%s\n' "$inspector" > "$snapshot/inspector-container-id"
   printf '%s\n' "$tunnel" > "$snapshot/tunnel-container-id"
-  printf '%s\n' "$sources" > "$snapshot/original-file-order"
-  printf '%s\n' "${#files[@]}" > "$snapshot/file-count"
   old_image=$(image_id "$inspector")
   [[ $old_image =~ ^sha256:[0-9a-f]{64}$ ]] || fail 'previous image ID is invalid'
   printf '%s\n' "$old_image" > "$snapshot/inspector-image-id"
   docker image inspect "$old_image" >/dev/null || fail 'previous image is unavailable'
-  docker compose --env-file "$env_file" "${compose_args[@]}" -p "$project" config --format json > "$snapshot/effective.json" || fail 'original Compose configuration cannot be resolved'
-  for service in inspector tunnel-client; do
-    actual=$(label "$(if [[ $service == inspector ]]; then echo "$inspector"; else echo "$tunnel"; fi)" com.docker.compose.config-hash)
-    resolved=$(docker compose --env-file "$env_file" "${compose_args[@]}" -p "$project" config --hash "$service") || fail "cannot hash $service configuration"
-    [[ $resolved == "$service $actual" ]] || fail "$service configuration differs from the running container"
-  done
+  docker compose --env-file "$env_file" "${inspector_args[@]}" -p "$project" config --format json > "$snapshot/effective.json" || fail 'original Compose configuration cannot be resolved'
+  inspector_hash=$(label "$inspector" com.docker.compose.config-hash)
+  tunnel_hash=$(label "$tunnel" com.docker.compose.config-hash)
+  resolved=$(docker compose --env-file "$env_file" "${inspector_args[@]}" -p "$project" config --hash inspector) || fail 'cannot hash Inspector configuration'
+  [[ $resolved == "inspector $inspector_hash" ]] || fail 'Inspector configuration differs from the running container'
+  resolved=$(docker compose --env-file "$env_file" "${tunnel_args[@]}" -p "$project" config --hash tunnel-client) || fail 'cannot hash Tunnel configuration'
+  [[ $resolved == "tunnel-client $tunnel_hash" ]] || fail 'Tunnel configuration differs from the running container'
+  resolved=$(docker compose --env-file "$env_file" "${inspector_args[@]}" -p "$project" config --hash tunnel-client) || fail 'cannot hash Tunnel configuration in Inspector source files'
+  [[ $resolved == "tunnel-client $tunnel_hash" ]] || fail 'Inspector source files cannot reproduce the running Tunnel configuration'
   printf 'services:\n  inspector:\n    image: %s\n    pull_policy: never\n' "$old_image" > "$snapshot/rollback-image.yaml"
-  (cd "$snapshot" && sha256sum original.env effective.json rollback-image.yaml project-name inspector-container-id inspector-image-id tunnel-container-id original-file-order file-count file-*.yaml > SHA256SUMS)
+  (cd "$snapshot" && sha256sum original.env effective.json rollback-image.yaml project-name inspector-container-id inspector-image-id tunnel-container-id inspector-file-order inspector-file-count inspector-file-*.yaml tunnel-file-order tunnel-file-count tunnel-file-*.yaml > SHA256SUMS)
   echo 'Rollback snapshot captured and checked against running Compose labels'
 elif [[ $mode == verify ]]; then
   [[ $# == 2 && -d $snapshot && ! -L $snapshot ]] || fail 'snapshot directory is missing or unsafe'
   (cd "$snapshot" && sha256sum --status -c SHA256SUMS) || fail 'snapshot files are missing or changed'
-  count=$(cat "$snapshot/file-count")
-  [[ $count =~ ^[1-9][0-9]*$ ]] || fail 'snapshot Compose file count is invalid'
-  for ((index=1; index<=count; index++)); do
-    [[ -f $snapshot/file-$(printf '%02d' "$index").yaml ]] || fail "snapshot Compose file $index is missing"
+  for service in inspector tunnel; do
+    count=$(cat "$snapshot/$service-file-count")
+    [[ $count =~ ^[1-9][0-9]*$ ]] || fail "$service snapshot Compose file count is invalid"
+    for ((index=1; index<=count; index++)); do
+      [[ -f $snapshot/$service-file-$(printf '%02d' "$index").yaml ]] || fail "$service snapshot Compose file $index is missing"
+    done
   done
   project=$(cat "$snapshot/project-name")
   tunnel=$(cat "$snapshot/tunnel-container-id")

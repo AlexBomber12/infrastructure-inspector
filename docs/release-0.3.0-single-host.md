@@ -18,10 +18,11 @@ Use the existing deployment's exact Compose invocation to identify its running
 Inspector and Tunnel container IDs. Identify the env file that supplied the
 old Compose interpolation values. If the old invocation used shell exports,
 move those values into a private env file and unset the exports first. The
-capture fails unless the resolved Inspector and Tunnel service hashes match
-the live containers. It reads both containers' Compose labels to recover the
-original Compose file **order** and project name, and refuses missing files,
-including a temporary override. It saves private copies of those files, the
+capture fails unless each service's own resolved hash matches its live
+container and the frozen configuration can reproduce both. It reads each
+container's Compose labels to recover its Compose file **order** and the
+project name; the file lists can differ after Inspector-only recreation. It
+refuses missing files, including a temporary override. It saves private copies of those files, the
 env file, the previous image ID, container identities, checksums, and a frozen
 resolved Compose configuration. The snapshot directory must be new and private.
 A failed capture leaves an unusable partial directory; discard it and retry

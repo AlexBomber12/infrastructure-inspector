@@ -60,7 +60,7 @@ mv "$fixture/override.yaml" "$fixture/override.saved"
 if bash scripts/release_snapshot.sh capture "$fixture/missing-snapshot" "$fixture/original.env" "$old_container" "$tunnel" >"$fixture/missing-override.log" 2>&1; then
   echo 'Missing original override passed snapshot capture' >&2; exit 1
 fi
-rg -q 'original Compose file 2 is missing' "$fixture/missing-override.log"
+rg -q 'original inspector Compose file 2 is missing' "$fixture/missing-override.log"
 mv "$fixture/override.saved" "$fixture/override.yaml"
 other_project="${project}-other"
 docker compose --env-file "$fixture/original.env" -f "$fixture/base.yaml" -f "$fixture/override.yaml" -p "$other_project" up -d --no-build --pull never inspector tunnel-client >/dev/null
@@ -93,16 +93,16 @@ reversed=$(docker compose --env-file "$fixture/original.env" -f "$fixture/overri
 actual=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.config-hash"}}' "$old_container")
 test "$reversed" != "$actual"
 # Tampering with or omitting a saved file fails readiness.
-mv "$fixture/snapshot/file-02.yaml" "$fixture/snapshot/file-02.missing"
+mv "$fixture/snapshot/inspector-file-02.yaml" "$fixture/snapshot/inspector-file-02.missing"
 if bash scripts/release_snapshot.sh verify "$fixture/snapshot" >"$fixture/incomplete.log" 2>&1; then
   echo 'Incomplete snapshot passed readiness' >&2; exit 1
 fi
 rg -q 'snapshot files are missing or changed' "$fixture/incomplete.log"
-mv "$fixture/snapshot/file-02.missing" "$fixture/snapshot/file-02.yaml"
+mv "$fixture/snapshot/inspector-file-02.missing" "$fixture/snapshot/inspector-file-02.yaml"
 # An unavailable previous image ID is rejected without changing containers.
 cp -a "$fixture/snapshot" "$fixture/unavailable"
 printf 'sha256:%064d\n' 0 > "$fixture/unavailable/inspector-image-id"
-(cd "$fixture/unavailable" && sha256sum original.env effective.json rollback-image.yaml project-name inspector-container-id inspector-image-id tunnel-container-id original-file-order file-count file-*.yaml > SHA256SUMS)
+(cd "$fixture/unavailable" && sha256sum original.env effective.json rollback-image.yaml project-name inspector-container-id inspector-image-id tunnel-container-id inspector-file-order inspector-file-count inspector-file-*.yaml tunnel-file-order tunnel-file-count tunnel-file-*.yaml > SHA256SUMS)
 if bash scripts/release_snapshot.sh verify "$fixture/unavailable" >"$fixture/unavailable.log" 2>&1; then
   echo 'Unavailable old image passed readiness' >&2; exit 1
 fi
@@ -119,6 +119,8 @@ docker compose --env-file "$fixture/original.env" -f "$fixture/base.yaml" -f "$f
 candidate=$(docker compose --env-file "$fixture/original.env" -f "$fixture/base.yaml" -f "$fixture/override.yaml" -f "$fixture/candidate.yaml" -p "$project" ps -q inspector)
 test "$(docker inspect --format '{{.Image}}' "$candidate")" = "$new_image"
 test "$(docker compose --env-file "$fixture/original.env" -f "$fixture/base.yaml" -f "$fixture/override.yaml" -p "$project" ps -q tunnel-client)" = "$tunnel"
+bash scripts/release_snapshot.sh capture "$fixture/candidate-snapshot" "$fixture/original.env" "$candidate" "$tunnel"
+bash scripts/release_snapshot.sh verify "$fixture/candidate-snapshot"
 # A wrong host label stands in for a failed MCP post-deployment verification.
 if docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$candidate" | rg -q '^INSPECTOR_HOST_LABEL=original$'; then
   echo 'Expected candidate verification failure' >&2; exit 1
@@ -136,4 +138,6 @@ test "$(docker inspect --format '{{index .Config.Labels "com.docker.compose.conf
 test "$(docker compose -f "$fixture/snapshot/effective.json" -f "$fixture/snapshot/rollback-image.yaml" -p "$project" ps -q tunnel-client)" = "$tunnel"
 docker inspect --format '{{json .NetworkSettings.Networks}}' "$restored" | python3 -c 'import json,sys; x=json.load(sys.stdin); assert len(x)==1 and next(iter(x)).endswith("_private")'
 test "$(docker network inspect --format '{{.Internal}}' "${project}_private")" = true
+bash scripts/release_snapshot.sh capture "$fixture/after-rollback-snapshot" "$fixture/original.env" "$restored" "$tunnel"
+bash scripts/release_snapshot.sh verify "$fixture/after-rollback-snapshot"
 echo 'Disposable Inspector replacement and rollback passed'
