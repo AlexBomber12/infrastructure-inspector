@@ -18,6 +18,9 @@ RUN python -m pip install --no-cache-dir --only-binary=:all: --no-deps -r requir
     && python -m pip check
 
 COPY server.py catalog.py bounded.py hosts.py ./
+RUN chown root:root /opt /opt/ssh-inspector /opt/ssh-inspector/*.py \
+    && chmod 755 /opt /opt/ssh-inspector \
+    && chmod 644 /opt/ssh-inspector/*.py
 
 RUN groupadd --gid 65533 inspector && useradd --uid 65533 --gid inspector --home-dir /home/inspector --create-home --shell /usr/sbin/nologin inspector
 
