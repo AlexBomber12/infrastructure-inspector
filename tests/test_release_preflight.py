@@ -257,22 +257,22 @@ def test_cli_uses_exact_deployment_compose_file(tmp_path, capsys):
     metadata = {"Id": image_id}
     args = ["release_preflight.py", "--revision", revision, "--image-id", image_id,
             "--env-file", str(env_file), "--compose-file", str(compose_file),
-]
+            "--project-name", "running-project"]
     with patch.object(sys, "argv", args), patch.object(
         preflight, "validate_revision"
     ), patch.object(preflight, "validate_compose") as validate_compose, patch.object(
         preflight, "validate_image"
     ), patch.object(
-        preflight, "run", side_effect=[json.dumps({"services": {}}),
+        preflight, "run", side_effect=[json.dumps({"name": "running-project", "services": {}}),
                                       json.dumps({"services": {"approved": True}}),
                                       json.dumps([metadata]), json.dumps({"modules": []})]
     ) as run:
         assert preflight.main() == 0
         assert run.call_args_list[0].args == (
             "docker", "compose", "--env-file", str(env_file), "-f",
-            str(compose_file.resolve()), "config", "--format", "json")
+            str(compose_file.resolve()), "-p", "running-project", "config", "--format", "json")
         validate_compose.assert_called_once_with(
-            {"services": {}}, {"services": {"approved": True}}, image_id)
+            {"name": "running-project", "services": {}}, {"services": {"approved": True}}, image_id)
     assert "preflight passed" in capsys.readouterr().out
     compose_file.unlink()
     with patch.object(sys, "argv", args), patch.object(preflight, "validate_revision"):
@@ -287,12 +287,17 @@ def test_cli_failure_is_reported_without_secret_contents(tmp_path, capsys):
         path.touch()
     args = ["release_preflight.py", "--revision", "a" * 40,
             "--image-id", "sha256:" + "b" * 64, "--env-file", str(env_file),
-            "--compose-file", str(compose_file)]
+            "--compose-file", str(compose_file), "--project-name", "running-project"]
     with patch.object(sys, "argv", args), patch.object(
         preflight, "validate_revision"
     ), patch.object(preflight, "run", side_effect=ValueError("invalid Compose")):
         assert preflight.main() == 1
     assert "invalid Compose" in capsys.readouterr().err
+    with patch.object(sys, "argv", args), patch.object(
+        preflight, "validate_revision"
+    ), patch.object(preflight, "run", return_value=json.dumps({"name": "wrong-project"})):
+        assert preflight.main() == 1
+    assert "project differs" in capsys.readouterr().err
     with patch.object(sys, "argv", args), patch.dict(
         preflight.os.environ, {"INSPECTOR_SSH_TARGET": "stale@example"}
     ), patch.object(preflight, "run") as run:

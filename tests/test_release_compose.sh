@@ -22,12 +22,13 @@ services:
   inspector:
     image: sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 YAML
-docker compose --env-file "$tmp_dir/valid.env" -f compose.yaml config --format json > "$tmp_dir/before.json"
-docker compose --env-file "$tmp_dir/valid.env" -f compose.yaml -f "$tmp_dir/rollback.yaml" config --format json > "$tmp_dir/after.json"
+docker compose --env-file "$tmp_dir/valid.env" -f compose.yaml -p fixture-running-project config --format json > "$tmp_dir/before.json"
+docker compose --env-file "$tmp_dir/valid.env" -f compose.yaml -f "$tmp_dir/rollback.yaml" -p fixture-running-project config --format json > "$tmp_dir/after.json"
 python3 - "$tmp_dir/before.json" "$tmp_dir/after.json" <<'PY'
 import json
 import sys
 before, after = (json.load(open(path, encoding="utf-8")) for path in sys.argv[1:])
+assert before["name"] == after["name"] == "fixture-running-project"
 assert before["services"]["inspector"]["image"] == "sha256:" + "a" * 64
 assert after["services"]["inspector"]["image"] == "sha256:" + "b" * 64
 after["services"]["inspector"]["image"] = before["services"]["inspector"]["image"]

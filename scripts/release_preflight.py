@@ -178,6 +178,8 @@ def main():
                         help="Local production Compose env file; contents are never printed")
     parser.add_argument("--compose-file", type=Path, required=True,
                         help="Exact local Compose file intended for deployment")
+    parser.add_argument("--project-name", required=True,
+                        help="Compose project name recorded from the running containers")
     args = parser.parse_args()
     try:
         require(not COMPOSE_VARIABLES.intersection(os.environ),
@@ -188,7 +190,10 @@ def main():
         require(args.env_file.is_file(), "Local Compose env file is missing")
         require(args.compose_file.is_file(), "Deployment Compose file is missing")
         config = json.loads(run("docker", "compose", "--env-file", str(args.env_file),
-                                "-f", str(args.compose_file.resolve()), "config", "--format", "json"))
+                                "-f", str(args.compose_file.resolve()), "-p", args.project_name,
+                                "config", "--format", "json"))
+        require(config.get("name") == args.project_name,
+                "Effective Compose project differs from the running deployment")
         approved = json.loads(run("docker", "compose", "--env-file", str(ROOT / ".env.example"),
                                   "-f", str(ROOT / "compose.yaml"), "config", "--format", "json"))
         validate_compose(config, approved, args.image_id)
