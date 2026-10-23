@@ -16,7 +16,7 @@ preflight = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(preflight)
 
 
-def fixture_change(directory, operation, name="key"):
+def fixture_change(directory, image, operation, name="key"):
     script = """import os, pathlib, sys
 p = pathlib.Path('/fixture/secrets')
 name = p / sys.argv[2]
@@ -49,20 +49,21 @@ elif sys.argv[1] == 'inaccessible':
     name.chmod(0o400)
 """
     subprocess.run(["docker", "run", "--rm", "--network", "none", "--read-only",
+                    "--user", "0:0",
                     "--mount", f"type=bind,src={directory},dst=/fixture",
-                    "--entrypoint", "python", "python:3.12-slim", "-c", script,
+                    "--entrypoint", "python", image, "-c", script,
                     operation, name], check=True, capture_output=True, text=True, timeout=30)
 
 
 def main():
-    image = subprocess.run(["docker", "image", "inspect", "python:3.12-slim",
+    image = subprocess.run(["docker", "image", "inspect", "infrastructure-inspector:ci",
                             "--format", "{{.Id}}"], check=True, capture_output=True,
                            text=True).stdout.strip()
     config = json.loads((ROOT / "tests/fixtures/compose-single-effective.json").read_text())
     with tempfile.TemporaryDirectory() as directory:
         Path(directory).chmod(0o755)
         try:
-            fixture_change(directory, "setup")
+            fixture_change(directory, image, "setup")
             sources = [Path(directory) / "secrets" / name for name in ("key", "known", "tunnel")]
             mounts = [*config["services"]["inspector"]["volumes"],
                       *config["services"]["tunnel-client"]["volumes"]]
@@ -79,18 +80,18 @@ def main():
             preflight.validate_secrets(config, image)
             for name in ("key", "tunnel"):
                 for case in ("missing", "empty", "directory", "symlink", "inaccessible"):
-                    fixture_change(directory, case, name)
+                    fixture_change(directory, image, case, name)
                     try:
                         preflight.validate_secrets(config, image)
                     except ValueError as exc:
                         assert "Required secret" in str(exc)
                     else:
                         raise AssertionError(f"{name}: {case} secret passed preflight")
-                    fixture_change(directory, "cleanup")
-                    fixture_change(directory, "setup")
+                    fixture_change(directory, image, "cleanup")
+                    fixture_change(directory, image, "setup")
             print("Protected secret mount integration passed: valid and ten invalid cases")
         finally:
-            fixture_change(directory, "cleanup")
+            fixture_change(directory, image, "cleanup")
 
 
 if __name__ == "__main__":
