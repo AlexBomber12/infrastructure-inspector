@@ -59,7 +59,8 @@ Verify both recorded container IDs with `docker inspect` independently.
 Take the full expected image ID and revision SHA from the independently verified
 release record; do not derive expected values from the mutable image tag or
 from the local checkout. Confirm that this exact image is available on the
-deployment Docker Engine. Provide both values to the preflight. The preflight checks Compose interpolation, required
+deployment Docker Engine. Use a reviewed checkout whose Git history contains
+the release revision as an ancestor. Provide both values to the preflight. The preflight checks Compose interpolation, required
 single-host values, safe nonempty secret bind files, private network, tunnel
 contract, non-root/read-only runtime, no build path, local image identity,
 version/revision labels, and an isolated SSH-command probe. It does not read
@@ -67,8 +68,15 @@ secret contents, contact production SSH, or change containers. It compares the
 candidate's effective Compose configuration with the reviewed template while
 allowing operator-specific values. A missing or blank SSH target stops before
 any recreation. The image ID in `.env` must match `--image-id` exactly.
+Compose gives exported shell variables priority over `--env-file`. Clear the
+listed interpolation names and `COMPOSE_PROJECT_NAME` in every shell used for
+validation, deployment, or rollback. Preflight rejects them if exported.
 
 ```sh
+unset INSPECTOR_IMAGE_ID INSPECTOR_SSH_TARGET INSPECTOR_HOST_LABEL \
+  INSPECTOR_SSH_KEY_PATH INSPECTOR_KNOWN_HOSTS_PATH \
+  INSPECTOR_DOCKER_SUBNET INSPECTOR_DOCKER_GATEWAY \
+  OPENAI_TUNNEL_ID OPENAI_TUNNEL_API_KEY_PATH COMPOSE_PROJECT_NAME
 image_id=REPLACE_WITH_VERIFIED_FULL_SHA256_IMAGE_ID
 revision=REPLACE_WITH_VERIFIED_FULL_SOURCE_COMMIT_SHA
 test "$(docker image inspect --format '{{.Id}}' "$image_id")" = "$image_id"
@@ -90,6 +98,10 @@ and env files. `--no-deps` prevents tunnel recreation. `--no-build` and
 the verified immutable image ID from `.env`.
 
 ```sh
+unset INSPECTOR_IMAGE_ID INSPECTOR_SSH_TARGET INSPECTOR_HOST_LABEL \
+  INSPECTOR_SSH_KEY_PATH INSPECTOR_KNOWN_HOSTS_PATH \
+  INSPECTOR_DOCKER_SUBNET INSPECTOR_DOCKER_GATEWAY \
+  OPENAI_TUNNEL_ID OPENAI_TUNNEL_API_KEY_PATH COMPOSE_PROJECT_NAME
 docker compose --env-file "$env_file" -f "$compose_file" \
   up -d --no-deps --no-build --pull never inspector
 new_container=$(docker compose --env-file "$env_file" -f "$compose_file" ps -q inspector)
@@ -120,6 +132,10 @@ only for rollback; routine deployment uses the permanent env file alone.
 For the normal permanent single-file configuration:
 
 ```sh
+unset INSPECTOR_IMAGE_ID INSPECTOR_SSH_TARGET INSPECTOR_HOST_LABEL \
+  INSPECTOR_SSH_KEY_PATH INSPECTOR_KNOWN_HOSTS_PATH \
+  INSPECTOR_DOCKER_SUBNET INSPECTOR_DOCKER_GATEWAY \
+  OPENAI_TUNNEL_ID OPENAI_TUNNEL_API_KEY_PATH COMPOSE_PROJECT_NAME
 old_image_id=$(cat "$backup_dir/inspector-image-id")
 docker image inspect "$old_image_id" >/dev/null
 printf 'services:\n  inspector:\n    image: %s\n' "$old_image_id" > "$backup_dir/rollback-image.yaml"

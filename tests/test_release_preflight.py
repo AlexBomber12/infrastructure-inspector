@@ -30,9 +30,18 @@ def config(tmp_path):
 
 
 def test_revision_validation():
-    preflight.validate_revision("a" * 40)
+    with patch.object(preflight, "run", return_value="") as run:
+        preflight.validate_revision("a" * 40)
+        assert run.call_args_list[0].args == (
+            "git", "merge-base", "--is-ancestor", "a" * 40, "HEAD")
     with pytest.raises(ValueError, match="full commit"):
         preflight.validate_revision("short")
+    with patch.object(preflight, "run", side_effect=ValueError("Local command failed: git merge-base")):
+        with pytest.raises(ValueError, match="merge-base"):
+            preflight.validate_revision("b" * 40)
+    with patch.object(preflight, "run", side_effect=["", "modified"]):
+        with pytest.raises(ValueError, match="dirty"):
+            preflight.validate_revision("a" * 40)
 
 
 def test_local_command_failure_does_not_expose_output():
@@ -284,7 +293,15 @@ def test_cli_failure_is_reported_without_secret_contents(tmp_path, capsys):
     ), patch.object(preflight, "run", side_effect=ValueError("invalid Compose")):
         assert preflight.main() == 1
     assert "invalid Compose" in capsys.readouterr().err
+    with patch.object(sys, "argv", args), patch.dict(
+        preflight.os.environ, {"INSPECTOR_SSH_TARGET": "stale@example"}
+    ), patch.object(preflight, "run") as run:
+        assert preflight.main() == 1
+        run.assert_not_called()
+    assert "Unset exported Compose" in capsys.readouterr().err
     with patch.object(sys, "argv", [*args[:4], "latest", *args[5:]]), patch.object(
+        preflight, "validate_revision"
+    ), patch.object(
         preflight, "run"
     ) as run:
         assert preflight.main() == 1

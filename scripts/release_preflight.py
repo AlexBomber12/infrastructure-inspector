@@ -16,6 +16,12 @@ from hosts import LABEL, valid_target
 
 ROOT = Path(__file__).resolve().parents[1]
 VERSION = "0.3.0"
+COMPOSE_VARIABLES = {
+    "INSPECTOR_IMAGE_ID", "INSPECTOR_SSH_TARGET", "INSPECTOR_HOST_LABEL",
+    "INSPECTOR_SSH_KEY_PATH", "INSPECTOR_KNOWN_HOSTS_PATH",
+    "INSPECTOR_DOCKER_SUBNET", "INSPECTOR_DOCKER_GATEWAY",
+    "OPENAI_TUNNEL_ID", "OPENAI_TUNNEL_API_KEY_PATH", "COMPOSE_PROJECT_NAME",
+}
 SECRET_TARGETS = {
     "inspector": {"/run/secrets/sg-audit-ed25519", "/run/secrets/ssh-known-hosts"},
     "tunnel-client": {"/run/secrets/control-plane-api-key"},
@@ -47,6 +53,8 @@ def run(*args):
 def validate_revision(expected_revision):
     require(re.fullmatch(r"[0-9a-f]{40}", expected_revision) is not None,
             "Expected revision must be a full commit SHA")
+    run("git", "merge-base", "--is-ancestor", expected_revision, "HEAD")
+    require(not run("git", "status", "--porcelain"), "Release checkout is dirty")
 
 
 def _runtime_contract(config):
@@ -172,6 +180,8 @@ def main():
                         help="Exact local Compose file intended for deployment")
     args = parser.parse_args()
     try:
+        require(not COMPOSE_VARIABLES.intersection(os.environ),
+                "Unset exported Compose deployment variables before preflight")
         validate_revision(args.revision)
         require(re.fullmatch(r"sha256:[0-9a-f]{64}", args.image_id) is not None,
                 "Expected image ID must be a full sha256 identifier")
