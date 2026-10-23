@@ -89,20 +89,58 @@ def test_secret_mount_must_exist_without_reading(config):
     approved = copy.deepcopy(config)
     source = Path(config["services"]["inspector"]["volumes"][0]["source"])
     source.unlink()
-    with pytest.raises(ValueError, match="secret file missing"):
-        preflight.validate_compose(config, approved, approved["services"]["inspector"]["image"])
+    preflight.validate_compose(config, approved, approved["services"]["inspector"]["image"])
+    with patch.object(preflight.subprocess, "run", return_value=SimpleNamespace(returncode=1)):
+        with pytest.raises(ValueError, match="missing, unsafe, empty, or inaccessible"):
+            preflight.validate_secrets(config, approved["services"]["inspector"]["image"])
 
 
 def test_secret_mount_rejects_empty_and_symlink(config, tmp_path):
     approved = copy.deepcopy(config)
     source = Path(config["services"]["inspector"]["volumes"][0]["source"])
     source.write_text("")
-    with pytest.raises(ValueError, match="secret file missing"):
-        preflight.validate_compose(config, approved, approved["services"]["inspector"]["image"])
+    preflight.validate_compose(config, approved, approved["services"]["inspector"]["image"])
     source.unlink()
     source.symlink_to(tmp_path / "ssh-known-hosts")
-    with pytest.raises(ValueError, match="secret file missing"):
-        preflight.validate_compose(config, approved, approved["services"]["inspector"]["image"])
+    preflight.validate_compose(config, approved, approved["services"]["inspector"]["image"])
+
+
+def test_secret_probe_uses_effective_mounts_and_service_identity(config):
+    image_id = config["services"]["inspector"]["image"]
+    with patch.object(preflight.subprocess, "run", return_value=SimpleNamespace(
+        returncode=0, stdout="[1, 2]")) as run:
+        preflight.validate_secrets(config, image_id)
+    assert run.call_count == 6
+    for call in run.call_args_list:
+        command = call.args[0]
+        assert command[:4] == ("docker", "run", "--rm", "--name")
+        assert "none" in command and "--cap-drop" in command
+        assert "no-new-privileges:true" in command
+        assert preflight.SECRET_META_PROBE in command or preflight.SECRET_ACCESS_PROBE in command
+        assert "0:0" in command or "65533:65533" in command or "65532:65532" in command
+        assert call.kwargs["timeout"] == 30
+    source = config["services"]["inspector"]["volumes"][0]
+    source["source"] = "/tmp/bad,source"
+    with pytest.raises(ValueError, match="source is invalid"):
+        preflight.validate_secrets(config, image_id)
+    source["source"] = "relative"
+    with pytest.raises(ValueError, match="source is invalid"):
+        preflight.validate_compose(config, copy.deepcopy(config), image_id)
+
+
+def test_secret_probe_timeout_removes_only_its_disposable_container(config):
+    image_id = config["services"]["inspector"]["image"]
+    timeout = preflight.subprocess.TimeoutExpired("docker", 30)
+    with patch.object(preflight.subprocess, "run", side_effect=[
+        timeout, SimpleNamespace(returncode=0)]) as run:
+        with pytest.raises(ValueError, match="probe timed out"):
+            preflight.validate_secrets(config, image_id)
+        assert run.call_args_list[1].args[0][:4] == (
+            "docker", "container", "rm", "--force")
+        assert run.call_args_list[1].args[0][4] == run.call_args_list[0].args[0][4]
+    with patch.object(preflight.subprocess, "run", side_effect=[timeout, OSError()]):
+        with pytest.raises(ValueError, match="probe timed out"):
+            preflight.validate_secrets(config, image_id)
 
 
 def test_secret_mounts_must_belong_to_correct_service(config):
@@ -267,7 +305,7 @@ def test_cli_uses_exact_deployment_compose_file(tmp_path, capsys):
         preflight, "run", side_effect=[json.dumps({"name": "running-project", "services": {}}),
                                       json.dumps({"services": {"approved": True}}),
                                       json.dumps([metadata]), json.dumps({"modules": []})]
-    ) as run:
+    ) as run, patch.object(preflight, "validate_secrets") as validate_secrets:
         assert preflight.main() == 0
         validate_revisions.assert_called_once_with(revision, "c" * 40)
         assert run.call_args_list[0].args == (
@@ -275,6 +313,7 @@ def test_cli_uses_exact_deployment_compose_file(tmp_path, capsys):
             str(compose_file.resolve()), "-p", "running-project", "config", "--format", "json")
         validate_compose.assert_called_once_with(
             {"name": "running-project", "services": {}}, {"services": {"approved": True}}, image_id)
+        validate_secrets.assert_called_once_with({"name": "running-project", "services": {}}, image_id)
     assert "preflight passed" in capsys.readouterr().out
     compose_file.unlink()
     with patch.object(sys, "argv", args), patch.object(preflight, "validate_revisions"):

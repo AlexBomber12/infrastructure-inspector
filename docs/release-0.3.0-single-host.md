@@ -69,6 +69,18 @@ Tunnel contract, non-root/read-only settings, and an isolated SSH-command
 probe. It does not contact production SSH or read secret contents. The
 snapshot check ensures rollback remains possible before any mutation.
 
+The deployment operator needs Docker daemon access, but does not need host
+traversal permission on root-owned secret directories. Preflight uses the
+verified local image in short-lived, no-network, read-only probes. It checks
+each source entry without following a final symlink, then opens the exact
+read-only file bind as the configured Inspector or Tunnel UID/GID and compares
+file identities. The metadata probe runs as root with all capabilities dropped
+and sees only the source's immediate parent directory; it never reads credential
+bytes. A secret parent must be traversable by that constrained root process.
+Failure to inspect or open any required mount stops the release before container
+recreation. Docker daemon access is already privileged; limit it to trusted
+deployment operators.
+
 ```sh
 set -euo pipefail
 unset INSPECTOR_IMAGE_ID INSPECTOR_SSH_TARGET INSPECTOR_HOST_LABEL \
