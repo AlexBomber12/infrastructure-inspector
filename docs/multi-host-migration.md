@@ -178,10 +178,19 @@ the repository's synthetic NAT test does not establish this production fact.
 
 ## Rollback
 
-Stop the multi-host unit, run the cleanup helper again with the reviewed unit
-configuration, and confirm no multi-host Inspector is running. If Docker cannot
-confirm this, retain the nftables policy and do not claim rollback complete.
-Verify the snapshot and restore only Inspector from the captured effective configuration and immutable old image:
+Disable and stop the multi-host unit so it cannot recreate Inspector on the
+next boot, even if it had been enabled after candidate acceptance:
+
+```sh
+sudo systemctl disable --now infrastructure-inspector-multi.service
+test "$(systemctl is-enabled infrastructure-inspector-multi.service)" = disabled
+```
+
+Run the cleanup helper again with the reviewed unit configuration and confirm
+no multi-host Inspector is running. If Docker cannot confirm this, retain the
+nftables policy and stop rollback until the candidate's state is resolved.
+Verify the snapshot and restore only Inspector from the captured effective
+configuration and immutable old image:
 
 ```sh
 bash scripts/release_snapshot.sh verify "$SNAPSHOT"
@@ -193,7 +202,8 @@ legacy diagnostic, and original Tunnel ID and hash. Remove only the newly
 created `${PROJECT}_ssh-egress` network after confirming no container uses it.
 Disable the new policy boot unit. Remove only `inet inspector_multi`
 after Docker confirms the candidate is stopped and the old Inspector is
-restored. Keep the snapshot and credentials protected for incident review. Never prune unrelated networks or images as part of rollback.
+restored. Keep the snapshot and credentials protected for incident review.
+Never prune unrelated networks or images as part of rollback.
 
 ## Evidence and remaining production checks
 
