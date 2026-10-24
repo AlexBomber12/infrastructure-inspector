@@ -1,0 +1,11 @@
+# Install as root-owned /etc/infrastructure-inspector/multi-host-unit.conf.
+# Use absolute canonical paths. Keep real topology and credentials outside Git.
+INSPECTOR_UNIT_COMPOSE=/opt/infrastructure-inspector/compose.multi.yaml
+INSPECTOR_UNIT_ENV=/private/deployment/multi.env
+INSPECTOR_UNIT_PROJECT=infrastructure-inspector
+INSPECTOR_UNIT_PRIVATE_IP=172.30.240.10
+INSPECTOR_UNIT_PRIVATE_MAC=02:42:ac:1e:f0:0a
+INSPECTOR_UNIT_PRIVATE_GATEWAY=172.30.240.1
+INSPECTOR_UNIT_EGRESS_IP=172.30.241.10
+INSPECTOR_UNIT_EGRESS_BRIDGE=br-insp-example
+INSPECTOR_UNIT_EXTERNAL_IPS="192.0.2.10"

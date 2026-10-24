@@ -1,0 +1,13 @@
+[Unit]
+Description=Install and verify reviewed multi-host Inspector nftables policy
+Before=infrastructure-inspector-multi.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+EnvironmentFile=/etc/infrastructure-inspector/multi-host-unit.conf
+ExecStart=/usr/bin/bash /opt/infrastructure-inspector/scripts/multi_host_service.sh policy-start
+TimeoutStartSec=30s
+
+[Install]
+WantedBy=multi-user.target
