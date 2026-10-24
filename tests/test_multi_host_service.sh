@@ -17,6 +17,7 @@ export REAL_DOCKER
 image=$(docker image inspect infrastructure-inspector-test:ci --format '{{.Id}}')
 cat > "$tmp/fixture.env" <<ENV
 INSPECTOR_IMAGE_ID=$image
+INSPECTOR_EGRESS_BRIDGE=br-lc-$$
 ENV
 cat > "$tmp/compose.multi.yaml" <<'YAML'
 name: infrastructure-inspector
@@ -45,7 +46,10 @@ networks:
     ipam:
       config:
         - subnet: 10.253.252.0/24
+          gateway: 10.253.252.1
   ssh-egress:
+    driver_opts:
+      com.docker.network.bridge.name: ${INSPECTOR_EGRESS_BRIDGE:?}
     ipam:
       config:
         - subnet: 10.253.253.0/24
@@ -57,7 +61,7 @@ export INSPECTOR_UNIT_PRIVATE_IP=10.253.252.10
 export INSPECTOR_UNIT_PRIVATE_MAC=02:42:ac:1c:fc:0a
 export INSPECTOR_UNIT_PRIVATE_GATEWAY=10.253.252.1
 export INSPECTOR_UNIT_EGRESS_IP=10.253.253.10
-export INSPECTOR_UNIT_EGRESS_BRIDGE=br-test-lifecycle
+export INSPECTOR_UNIT_EGRESS_BRIDGE=br-lc-$$
 export INSPECTOR_UNIT_EXTERNAL_IPS=192.0.2.10
 
 # Validate the shipped units against a disposable unit search path.
@@ -98,6 +102,19 @@ kill -KILL "$compose_pid"
 wait "$compose_pid" 2>/dev/null || true
 [[ $(docker inspect --format '{{.State.Running}}' "$candidate") == true ]]
 bash scripts/multi_host_service.sh cleanup
+# Emulate Docker versions that clear all operational network data on stop.
+export TEST_CANDIDATE="$candidate"
+cat > "$tmp/bin/docker" <<'SH'
+#!/usr/bin/env bash
+if [[ $1 == inspect && $2 == "$TEST_CANDIDATE" ]]; then
+  "$REAL_DOCKER" inspect "$2" | jq '.[0].NetworkSettings.Networks = {}'
+  exit
+fi
+exec "$REAL_DOCKER" "$@"
+SH
+chmod +x "$tmp/bin/docker"
+PATH="$tmp/bin:$PATH" bash scripts/multi_host_service.sh cleanup
+rm "$tmp/bin/docker"
 [[ $(docker inspect --format '{{.State.Running}}' "$candidate") == false ]]
 [[ $(docker inspect --format '{{.Id}}' "$project-tunnel") == "$tunnel" ]]
 [[ $(docker inspect --format '{{.State.Running}}' "$project-tunnel") == true ]]
@@ -105,6 +122,11 @@ bash scripts/multi_host_service.sh cleanup
 # A failed Docker stop must fail verification and leave the firewall marker.
 docker compose --env-file "$tmp/fixture.env" -f "$tmp/compose.multi.yaml" -p "$project" up -d --no-deps --no-build --pull never inspector >/dev/null
 printf 'installed\n' > "$tmp/policy-marker"
+if INSPECTOR_UNIT_EGRESS_BRIDGE=br-wrong-$$ bash scripts/multi_host_service.sh cleanup >"$tmp/bridge-failure.log" 2>&1; then
+  echo 'Expected Compose/policy bridge mismatch failure' >&2; exit 1
+fi
+[[ $(cat "$tmp/policy-marker") == installed ]]
+[[ $(docker inspect --format '{{.State.Running}}' "$candidate") == true ]]
 docker update --restart unless-stopped "$candidate" >/dev/null
 if bash scripts/multi_host_service.sh cleanup >"$tmp/identity-failure.log" 2>&1; then
   echo 'Expected identity mismatch failure' >&2; exit 1

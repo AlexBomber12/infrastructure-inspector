@@ -35,7 +35,7 @@ validate_contract() {
   [[ $expected_hash =~ ^[a-f0-9]{64}$ ]] || fail 'invalid Inspector hash; policy retained'
   expected_image=$(jq -er '.services.inspector.image' <<< "$config") || fail 'missing Inspector image; policy retained'
   [[ $expected_image =~ ^sha256:[a-f0-9]{64}$ ]] || fail 'Inspector image is not an immutable ID; policy retained'
-  jq -e --arg p "$INSPECTOR_UNIT_PROJECT" --arg ip "$INSPECTOR_UNIT_PRIVATE_IP" --arg mac "$INSPECTOR_UNIT_PRIVATE_MAC" --arg eip "$INSPECTOR_UNIT_EGRESS_IP" '
+  jq -e --arg p "$INSPECTOR_UNIT_PROJECT" --arg ip "$INSPECTOR_UNIT_PRIVATE_IP" --arg mac "$INSPECTOR_UNIT_PRIVATE_MAC" --arg eip "$INSPECTOR_UNIT_EGRESS_IP" --arg gateway "$INSPECTOR_UNIT_PRIVATE_GATEWAY" --arg bridge "$INSPECTOR_UNIT_EGRESS_BRIDGE" '
     .name == $p and (.services | keys == ["inspector", "tunnel-client"]) and
     .services.inspector.environment.INSPECTOR_HOST_MODE == "multi" and
     .services.inspector.restart == "no" and
@@ -43,6 +43,8 @@ validate_contract() {
     .services.inspector.networks["mcp-private"].ipv4_address == $ip and
     (.services.inspector.networks["mcp-private"].mac_address | ascii_downcase) == ($mac | ascii_downcase) and
     .services.inspector.networks["ssh-egress"].ipv4_address == $eip and
+    .networks["mcp-private"].ipam.config[0].gateway == $gateway and
+    .networks["ssh-egress"].driver_opts["com.docker.network.bridge.name"] == $bridge and
     (.services.inspector.networks | keys == ["mcp-private", "ssh-egress"])
   ' <<< "$config" >/dev/null || fail 'reviewed multi-host contract mismatch; policy retained'
 }
@@ -82,10 +84,12 @@ case ${1:-} in
         .Config.Labels["com.docker.compose.project.config_files"] == $path and
         .Image == $image and .HostConfig.RestartPolicy.Name == "no" and
         (.Config.Env | index("INSPECTOR_HOST_MODE=multi")) != null and
-        (.NetworkSettings.Networks | keys == [$p + "_mcp-private", $p + "_ssh-egress"]) and
-        .NetworkSettings.Networks[$p + "_mcp-private"].IPAddress == $ip and
-        (.NetworkSettings.Networks[$p + "_mcp-private"].MacAddress | ascii_downcase) == ($mac | ascii_downcase) and
-        .NetworkSettings.Networks[$p + "_ssh-egress"].IPAddress == $eip
+        (.State.Running == false or (
+          (.NetworkSettings.Networks | keys == [$p + "_mcp-private", $p + "_ssh-egress"]) and
+          .NetworkSettings.Networks[$p + "_mcp-private"].IPAddress == $ip and
+          (.NetworkSettings.Networks[$p + "_mcp-private"].MacAddress | ascii_downcase) == ($mac | ascii_downcase) and
+          .NetworkSettings.Networks[$p + "_ssh-egress"].IPAddress == $eip
+        ))
       ' <<< "$metadata" >/dev/null || fail "multi-host container identity mismatch ($id); policy retained"
       if [[ $(jq -r '.[0].State.Running' <<< "$metadata") == true ]]; then
         if ! timeout 12s docker stop --time 5 "$id" >/dev/null; then

@@ -111,7 +111,10 @@ start. The service's `ExecStop` and `ExecStopPost` call the same bounded cleanup
 `ExecStopPost` runs even when policy verification or startup fails. Cleanup
 identifies a multi-host container by the exact Compose project, service,
 configuration hash, immutable image ID, source file, mode, restart policy,
-network attachments, addresses, and reserved MAC. A legacy single-host
+and the reviewed private gateway and egress bridge. For a running container it
+also checks both network attachments, addresses, and the reserved MAC. A
+stopped container is checked by stable identity because Docker may clear its
+operational network addresses. A legacy single-host
 Inspector has no multi-host mode marker and is left running. An unexpected
 multi-host identity or Docker error makes cleanup fail visibly. It never stops
 Tunnel and never uses project-wide Compose stop/down or removal.
