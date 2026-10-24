@@ -168,6 +168,45 @@ def test_multi_host_migration_requires_current_snapshot(multi_config, tmp_path):
             preflight.validate_migration(multi_config, compose, env, "project", tmp_path)
 
 
+@pytest.mark.parametrize("ipam", [
+    {"Config": [{"Subnet": "172.22.0.0/16", "Gateway": "172.22.0.1",
+                 "IPRange": "172.22.1.0/24"}]},
+    {"Config": [{"Subnet": "172.23.0.0/16", "Gateway": "172.22.0.1", "IPRange": ""}]},
+    {"Config": [{"Subnet": "172.22.0.0/16", "Gateway": "172.22.0.2", "IPRange": ""}]},
+    {"Config": [{"Subnet": "172.22.0.0/16", "Gateway": "172.22.0.1", "IPRange": ""},
+                {"Subnet": "172.23.0.0/16", "Gateway": "172.23.0.1"}]},
+    {"Config": [{"Subnet": "bad", "Gateway": "172.22.0.1"}]},
+    {"Config": [{"Subnet": "172.22.0.0/16", "Gateway": "bad"}]},
+    {"Config": [{"Subnet": "172.22.0.0/16", "Gateway": "2001:db8::1"}]},
+    {"Config": [{"Subnet": "2001:db8::/64", "Gateway": "2001:db8::1"}]},
+    {"Config": [{"Subnet": "172.22.0.0/16"}]},
+    {"Config": [{"Gateway": "172.22.0.1"}]},
+    {"Config": [{"Subnet": "172.22.0.0/16", "Gateway": None}]},
+    {"Config": [{"Subnet": "172.22.0.0/16", "Gateway": "172.22.0.1",
+                 "AuxAddress": {"reserved": "172.22.0.5"}}]},
+    {"Config": [{"Subnet": "172.22.0.0/16", "Gateway": "172.22.0.1",
+                 "IPRange": None}]},
+    {"Config": [{"Subnet": "172.22.0.0/16", "Gateway": "172.22.0.1"}],
+     "Options": {"unapproved": "value"}},
+    {"Config": [{"Subnet": "172.22.0.0/16", "Gateway": "172.22.0.1"}],
+     "Driver": "unapproved"},
+])
+def test_migration_rejects_effective_private_pool_drift(multi_config, tmp_path, ipam):
+    multi_config["name"] = "project"
+    multi_config["networks"]["mcp-private"]["ipam"]["config"][0] = {
+        "subnet": "172.22.0.0/16", "gateway": "172.22.0.1"}
+    (tmp_path / "tunnel-container-id").write_text("tunnel-id")
+    (tmp_path / "project-name").write_text("project")
+    attachments = {multi_config["networks"][name]["name"]: {}
+                   for name in ("mcp-private", "control-plane")}
+    network = {"Internal": True, "EnableIPv6": False, "IPAM": ipam}
+    with patch.object(preflight, "run", side_effect=[
+        "", "hash", "tunnel-client hash", json.dumps(attachments), json.dumps([network])
+    ]), pytest.raises(ValueError, match="(address pool|IPAM settings)"):
+        preflight.validate_migration(multi_config, tmp_path / "compose.yaml",
+                                     tmp_path / "deploy.env", "project", tmp_path)
+
+
 def test_multi_egress_subnet_rejects_existing_routes(multi_config):
     with patch.object(preflight, "run", side_effect=[json.dumps([{"ifname": "eth0"}]),
                                                       json.dumps([
@@ -588,27 +627,39 @@ def test_cli_multi_uses_multi_contract_and_snapshot(tmp_path, multi_config):
     compose_file = tmp_path / "multi.yaml"
     env_file.touch()
     compose_file.touch()
-    multi_config["name"] = "running-project"
+    project = "ssh-inspector-dev"
+    multi_config["name"] = project
+    multi_config["networks"]["mcp-private"]["name"] = "ssh-inspector-dev_mcp-private"
+    multi_config["networks"]["mcp-private"]["ipam"]["config"][0] = {
+        "subnet": "172.22.0.0/16", "gateway": "172.22.0.1"}
+    (tmp_path / "tunnel-container-id").write_text("tunnel-id")
+    (tmp_path / "project-name").write_text(project)
+    attachments = {multi_config["networks"][name]["name"]: {}
+                   for name in ("mcp-private", "control-plane")}
+    observed_network = {"Internal": True, "EnableIPv6": False, "IPAM": {
+        "Driver": "default", "Options": None,
+        "Config": [{"Subnet": "172.22.0.0/16", "IPRange": "",
+                    "Gateway": "172.22.0.1"}]}}
     image_id = multi_config["services"]["inspector"]["image"]
     args = ["release_preflight.py", "--revision", "a" * 40, "--image-id", image_id,
             "--env-file", str(env_file), "--compose-file", str(compose_file),
-            "--project-name", "running-project", "--deployment-revision", "b" * 40,
+            "--project-name", project, "--deployment-revision", "b" * 40,
             "--snapshot", str(tmp_path)]
     with patch.object(sys, "argv", args), patch.object(
         preflight, "validate_revisions"
     ), patch.object(preflight, "validate_compose") as validate_compose, patch.object(
         preflight, "validate_image"
-    ), patch.object(preflight, "validate_secrets"), patch.object(
-        preflight, "validate_migration"
-    ) as validate_migration, patch.object(preflight, "run", side_effect=[
+    ), patch.object(preflight, "validate_secrets"), patch.object(preflight, "run", side_effect=[
         json.dumps(multi_config), json.dumps(multi_config),
-        json.dumps([{"Id": image_id}]), json.dumps({"modules": []})
+        json.dumps([{"Id": image_id}]), json.dumps({"modules": []}),
+        "", "hash", "tunnel-client hash", json.dumps(attachments),
+        json.dumps([observed_network])
     ]) as commands, patch.object(preflight, "validate_egress_route") as route:
         assert preflight.main() == 0
     assert str(preflight.ROOT / ".env.multi.example") in commands.call_args_list[1].args
     validate_compose.assert_called_once()
-    validate_migration.assert_called_once_with(
-        multi_config, compose_file, env_file, "running-project", tmp_path)
+    assert commands.call_args_list[-1].args == (
+        "docker", "network", "inspect", "ssh-inspector-dev_mcp-private")
     route.assert_called_once_with(multi_config)
 
 
