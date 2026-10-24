@@ -6,7 +6,7 @@ tmp=$(mktemp -d)
 project="inspector-lifecycle-$$"
 cleanup() {
   result=$?
-  if (( result != 0 )); then cat "$tmp/up.log" 2>/dev/null || true; fi
+  if (( result != 0 )); then cat "$tmp/up.log" "$tmp/nft.log" 2>/dev/null || true; fi
   docker rm -f "$project-tunnel" "$project-legacy" >/dev/null 2>&1 || true
   docker compose --env-file "$tmp/fixture.env" -f "$tmp/compose.multi.yaml" -p "$project" down >/dev/null 2>&1 || true
   rm -rf "$tmp"
@@ -15,9 +15,26 @@ trap cleanup EXIT
 REAL_DOCKER=$(command -v docker)
 export REAL_DOCKER
 image=$(docker image inspect infrastructure-inspector-test:ci --format '{{.Id}}')
+mkdir -p "$tmp/hosts/default" "$tmp/hosts/ai-server" "$tmp/hosts/third"
+for host in default ai-server third; do
+  printf 'disposable identity\n' > "$tmp/hosts/$host/identity"
+  printf 'disposable known host\n' > "$tmp/hosts/$host/known_hosts"
+done
+registry="$tmp/host-registry.json"
+write_registry() {
+  local ai_ip=$1 third_ip=${2:-}
+  if [[ -n $third_ip ]]; then
+    printf '{"default_host":"default","hosts":[{"id":"default","label":"Server","target":"audit@10.253.252.1"},{"id":"ai-server","label":"AI Server","target":"audit@%s"},{"id":"third","label":"Third","target":"audit@%s"}]}\n' "$ai_ip" "$third_ip" > "$registry"
+  else
+    printf '{"default_host":"default","hosts":[{"id":"default","label":"Server","target":"audit@10.253.252.1"},{"id":"ai-server","label":"AI Server","target":"audit@%s"}]}\n' "$ai_ip" > "$registry"
+  fi
+}
+write_registry 192.0.2.10
 cat > "$tmp/fixture.env" <<ENV
 INSPECTOR_IMAGE_ID=$image
 INSPECTOR_EGRESS_BRIDGE=br-lc-$$
+INSPECTOR_HOST_REGISTRY_PATH=$registry
+INSPECTOR_HOST_SECRETS_DIR=$tmp/hosts
 ENV
 cat > "$tmp/compose.multi.yaml" <<'YAML'
 name: infrastructure-inspector
@@ -29,6 +46,15 @@ services:
     restart: "no"
     environment:
       INSPECTOR_HOST_MODE: multi
+    volumes:
+      - type: bind
+        source: ${INSPECTOR_HOST_REGISTRY_PATH:?}
+        target: /run/secrets/host-registry.json
+        read_only: true
+      - type: bind
+        source: ${INSPECTOR_HOST_SECRETS_DIR:?}
+        target: /run/secrets/inspector-hosts
+        read_only: true
     networks:
       mcp-private:
         ipv4_address: 10.253.252.10
@@ -86,11 +112,138 @@ fi
 bash scripts/multi_host_service.sh cleanup
 [[ $(docker inspect --format '{{.State.Running}}' "$project-legacy") == true ]]
 [[ $(docker inspect --format '{{.Id}}' "$project-tunnel") == "$tunnel" ]]
+
+# Exercise the real unit actions with a fake nft executable. A rejected
+# registry/allowlist combination must reach neither nft nor Docker creation.
+export NFT_CALL_LOG="$tmp/nft.log" NFT_EXPECTED_JSON="$tmp/expected-policy.json"
+cat > "$tmp/bin/nft" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$NFT_CALL_LOG"
+case "$1" in
+  -c|-f) exit 0 ;;
+  -j) cat "$NFT_EXPECTED_JSON" ;;
+  *) exit 1 ;;
+esac
+SH
+chmod +x "$tmp/bin/nft"
+# Supply the actual bridge through the environment to avoid a second policy
+# definition in this disposable test.
+write_expected_policy() {
+  python3 - "$NFT_EXPECTED_JSON" "$INSPECTOR_UNIT_EGRESS_BRIDGE" "$@" <<'PY'
+import json
+import runpy
+import sys
+policy = runpy.run_path("scripts/network_policy_verify.py")["expected_policy"]
+rules = policy("10.253.252.10", "02:42:ac:1c:fc:0a", "10.253.252.1",
+               "10.253.253.10", sys.argv[2], sys.argv[3:])
+with open(sys.argv[1], "w", encoding="utf-8") as output:
+    json.dump({"nftables": rules}, output)
+PY
+}
+assert_rejected() {
+  local case_name=$1 mode=$2 allowlist=$3 before after
+  : > "$NFT_CALL_LOG"
+  before=$(docker ps -aq --no-trunc --filter "label=com.docker.compose.project=$project" --filter 'label=com.docker.compose.service=inspector')
+  if INSPECTOR_UNIT_EXTERNAL_IPS="$allowlist" PATH="$tmp/bin:$PATH" timeout 5s \
+      bash scripts/multi_host_service.sh "$mode" >"$tmp/$case_name-$mode.log" 2>&1; then
+    echo "Expected $case_name to reject $mode" >&2; exit 1
+  fi
+  [[ ! -s $NFT_CALL_LOG ]] || { echo "Policy action reached nft for $case_name" >&2; exit 1; }
+  after=$(docker ps -aq --no-trunc --filter "label=com.docker.compose.project=$project" --filter 'label=com.docker.compose.service=inspector')
+  [[ $before == "$after" ]]
+  [[ $(docker inspect --format '{{.State.Running}}' "$project-legacy") == true ]]
+  [[ $(docker inspect --format '{{.Id}}' "$project-tunnel") == "$tunnel" ]]
+}
+reject_all_actions() {
+  local case_name=$1 allowlist=$2 mode
+  for mode in policy-start check start; do
+    assert_rejected "$case_name" "$mode" "$allowlist"
+  done
+}
+write_expected_policy 192.0.2.10
+: > "$NFT_CALL_LOG"
+PATH="$tmp/bin:$PATH" bash scripts/multi_host_service.sh policy-start
+rg -q '^-f ' "$NFT_CALL_LOG"
+PATH="$tmp/bin:$PATH" bash scripts/multi_host_service.sh check
+# The effective bind mount, not an unrelated unit path, is authoritative.
+cp "$registry" "$tmp/alternate-registry.json"
+python3 - "$tmp/alternate-registry.json" <<'PY'
+import json
+import sys
+path = sys.argv[1]
+with open(path, encoding="utf-8") as source:
+    data = json.load(source)
+data["hosts"][1]["target"] = "audit@192.0.2.11"
+with open(path, "w", encoding="utf-8") as output:
+    json.dump(data, output)
+PY
+cp "$tmp/fixture.env" "$tmp/original.env"
+sed "s|^INSPECTOR_HOST_REGISTRY_PATH=.*|INSPECTOR_HOST_REGISTRY_PATH=$tmp/alternate-registry.json|" \
+  "$tmp/original.env" > "$tmp/fixture.env"
+reject_all_actions mounted_registry_differs '192.0.2.10'
+write_expected_policy 192.0.2.11
+INSPECTOR_UNIT_EXTERNAL_IPS=192.0.2.11 PATH="$tmp/bin:$PATH" \
+  bash scripts/multi_host_service.sh policy-start
+cp "$tmp/original.env" "$tmp/fixture.env"
+write_expected_policy 192.0.2.10
+reject_all_actions extra '192.0.2.10 192.0.2.11'
+reject_all_actions duplicate '192.0.2.10 192.0.2.10'
+reject_all_actions malformed '192.0.2.999'
+reject_all_actions hostname 'example.com'
+reject_all_actions ipv6 '2001:db8::1'
+reject_all_actions multiline $'192.0.2.10\n192.0.2.11'
+reject_all_actions default_gateway '192.0.2.10 10.253.252.1'
+reject_all_actions substituted '192.0.2.11'
+write_registry example.com
+reject_all_actions registry_hostname '192.0.2.10'
+write_registry 2001:db8::1
+reject_all_actions registry_ipv6 '192.0.2.10'
+write_registry 192.0.2.999
+reject_all_actions registry_malformed_ip '192.0.2.10'
+write_registry 192.0.2.10 192.0.2.11
+reject_all_actions missing '192.0.2.10'
+write_registry 192.0.2.10 192.0.2.10
+reject_all_actions duplicate_registry_destinations '192.0.2.10'
+write_registry 192.0.2.10 192.0.2.11
+write_expected_policy 192.0.2.11 192.0.2.10
+INSPECTOR_UNIT_EXTERNAL_IPS='192.0.2.11 192.0.2.10' PATH="$tmp/bin:$PATH" \
+  bash scripts/multi_host_service.sh policy-start
+INSPECTOR_UNIT_EXTERNAL_IPS='192.0.2.11 192.0.2.10' PATH="$tmp/bin:$PATH" \
+  bash scripts/multi_host_service.sh check
+write_registry 192.0.2.10
+write_expected_policy 192.0.2.10
+mv "$registry" "$tmp/registry.saved"
+reject_all_actions missing_registry '192.0.2.10'
+mv "$tmp/registry.saved" "$registry"
+cp "$registry" "$tmp/registry.saved"
+printf '{not-json SENSITIVE_REGISTRY_BYTES\n' > "$registry"
+reject_all_actions invalid_json '192.0.2.10'
+if rg -q 'SENSITIVE_REGISTRY_BYTES' "$tmp"/invalid_json-*.log; then
+  echo 'Registry contents leaked in a validation failure' >&2; exit 1
+fi
+cp "$tmp/registry.saved" "$registry"
+python3 - "$registry" <<'PY'
+import json
+import sys
+path = sys.argv[1]
+with open(path, encoding="utf-8") as source:
+    data = json.load(source)
+data["default_host"] = "ai-server"
+with open(path, "w", encoding="utf-8") as output:
+    json.dump(data, output)
+PY
+reject_all_actions wrong_default '192.0.2.10'
+cp "$tmp/registry.saved" "$registry"
+chmod 0666 "$registry"
+reject_all_actions unsafe_registry '192.0.2.10'
+chmod 0000 "$registry"
+reject_all_actions unreadable_registry '192.0.2.10'
+chmod 0644 "$registry"
 docker rm -f "$project-legacy" >/dev/null
 
 # A killed foreground Compose client leaves its container running. Simulate
 # systemd's post-stop action with the same ExecStopPost helper.
-docker compose --env-file "$tmp/fixture.env" -f "$tmp/compose.multi.yaml" -p "$project" up --no-deps --no-build --pull never --exit-code-from inspector inspector >"$tmp/up.log" 2>&1 &
+PATH="$tmp/bin:$PATH" bash scripts/multi_host_service.sh start >"$tmp/up.log" 2>&1 &
 compose_pid=$!
 for _ in $(seq 1 40); do
   candidate=$(docker compose --env-file "$tmp/fixture.env" -f "$tmp/compose.multi.yaml" -p "$project" ps -q inspector)
@@ -101,7 +254,13 @@ done
 kill -KILL "$compose_pid"
 wait "$compose_pid" 2>/dev/null || true
 [[ $(docker inspect --format '{{.State.Running}}' "$candidate") == true ]]
+docker run -d --name "$project-legacy" --label "com.docker.compose.project=$project" --label 'com.docker.compose.service=inspector' "$image" python -c 'import time; time.sleep(600)' >/dev/null
+write_registry 192.0.2.11
 bash scripts/multi_host_service.sh cleanup
+[[ $(docker inspect --format '{{.State.Running}}' "$project-legacy") == true ]]
+[[ $(docker inspect --format '{{.Id}}' "$project-tunnel") == "$tunnel" ]]
+write_registry 192.0.2.10
+docker rm -f "$project-legacy" >/dev/null
 # Emulate Docker versions that clear all operational network data on stop.
 export TEST_CANDIDATE="$candidate"
 cat > "$tmp/bin/docker" <<'SH'
@@ -168,6 +327,8 @@ if PATH="$tmp/bin:$PATH" bash scripts/multi_host_service.sh cleanup >"$tmp/unava
 fi
 [[ $(cat "$tmp/policy-marker") == installed ]]
 [[ $(docker inspect --format '{{.State.Running}}' "$candidate") == true ]]
+mv "$registry" "$tmp/registry.saved"
 bash scripts/multi_host_service.sh cleanup
+mv "$tmp/registry.saved" "$registry"
 [[ $(docker inspect --format '{{.State.Running}}' "$candidate") == false ]]
 echo 'Disposable lifecycle, legacy isolation, Tunnel continuity, and failed cleanup checks passed'

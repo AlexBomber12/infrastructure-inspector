@@ -84,23 +84,29 @@ packet tests before Inspector is started.
 
 ## Network policy and controlled start
 
-Stop only the old Inspector after the fresh snapshot. Render the proposed
-policy using the reserved private address and MAC, private gateway, reserved egress
+Keep the old Inspector running through the fresh snapshot, policy validation,
+and release preflight. Render the proposed policy using the reserved private
+address and MAC, private gateway, reserved egress
 address, dedicated bridge name, and **each** external target IPv4 address:
 
 ```sh
 bash scripts/multi_network_policy.sh render "$PRIVATE_IP" "$PRIVATE_MAC" "$PRIVATE_GATEWAY" "$EGRESS_IP" "$EGRESS_BRIDGE" "$AI_IP" > "$PRIVATE_POLICY"
 ```
 
-Keep this file operator-owned outside Git. Review it against the registry and
-actual routes. Install it before starting or attaching the new Inspector to
-`ssh-egress`:
+Keep this rendered file operator-owned outside Git. Review it against the
+registry and actual routes. Install the policy through the reviewed systemd
+policy unit after its private configuration has been checked. The lifecycle
+helper reads the registry source from the effective Inspector bind mount and
+requires its non-default literal IPv4 SSH destinations to equal the unit's
+external allowlist before it invokes the policy installer. The default SERVER
+target must equal the private gateway and is never an external allow rule.
+Registry drift, an unsafe or unreadable registry, or any extra or missing
+destination blocks policy installation and Inspector startup. Cleanup still
+uses stable container identity when registry data is unavailable.
 
-```sh
-sudo bash scripts/multi_network_policy.sh install "$PRIVATE_IP" "$PRIVATE_MAC" "$PRIVATE_GATEWAY" "$EGRESS_IP" "$EGRESS_BRIDGE" "$AI_IP"
-```
-
-The install validates then atomically replaces only `inet inspector_multi`.
+The low-level installer validates its arguments, then atomically replaces only
+`inet inspector_multi`; the systemd helper supplies those arguments after the
+registry check.
 For the systemd deployment, use the reviewed units in `deploy/systemd/` and
 `scripts/multi_host_service.sh`. The policy oneshot installs and verifies the
 reviewed table. The Inspector unit requires the policy, binds to Docker, and verifies

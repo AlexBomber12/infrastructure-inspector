@@ -11,13 +11,11 @@ fail() { echo "Multi-host Inspector lifecycle: $*" >&2; exit 1; }
 : "${INSPECTOR_UNIT_PRIVATE_GATEWAY:?}"
 : "${INSPECTOR_UNIT_EGRESS_IP:?}"
 : "${INSPECTOR_UNIT_EGRESS_BRIDGE:?}"
-: "${INSPECTOR_UNIT_EXTERNAL_IPS:?}"
 [[ $INSPECTOR_UNIT_PROJECT =~ ^[a-z0-9][a-z0-9_-]*$ ]] || fail 'invalid project name'
 [[ $INSPECTOR_UNIT_ENV == /* && -f $INSPECTOR_UNIT_COMPOSE && -f $INSPECTOR_UNIT_ENV ]] || fail 'deployment files missing'
 [[ $(realpath -- "$INSPECTOR_UNIT_COMPOSE") == "$INSPECTOR_UNIT_COMPOSE" ]] || fail 'Compose path must be absolute and canonical'
 [[ $(basename -- "$INSPECTOR_UNIT_COMPOSE") == compose.multi.yaml ]] || fail 'expected multi-host Compose file'
-read -r -a external_ips <<< "$INSPECTOR_UNIT_EXTERNAL_IPS"
-[[ ${#external_ips[@]} -gt 0 ]] || fail 'external allow list missing'
+read -r -a external_ips <<< "${INSPECTOR_UNIT_EXTERNAL_IPS-}"
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 policy=("$INSPECTOR_UNIT_PRIVATE_IP" "$INSPECTOR_UNIT_PRIVATE_MAC" "$INSPECTOR_UNIT_PRIVATE_GATEWAY" "$INSPECTOR_UNIT_EGRESS_IP" "$INSPECTOR_UNIT_EGRESS_BRIDGE" "${external_ips[@]}")
 compose=(docker compose --env-file "$INSPECTOR_UNIT_ENV" -f "$INSPECTOR_UNIT_COMPOSE" -p "$INSPECTOR_UNIT_PROJECT")
@@ -49,18 +47,51 @@ validate_contract() {
   ' <<< "$config" >/dev/null || fail 'reviewed multi-host contract mismatch; policy retained'
 }
 
+validate_allowlist() {
+  [[ ${INSPECTOR_UNIT_EXTERNAL_IPS-} != *$'\n'* &&
+     ${INSPECTOR_UNIT_EXTERNAL_IPS-} != *$'\r'* ]] ||
+    fail 'external SSH allowlist is ambiguous; policy retained'
+  [[ ${#external_ips[@]} -gt 0 ]] || fail 'external SSH allowlist is missing; policy retained'
+  # These are the bind sources in the effective configuration used by Inspector,
+  # not a second registry path supplied by the unit environment.
+  registry_source=$(jq -er '
+    [.services.inspector.volumes[] | select(.target == "/run/secrets/host-registry.json")]
+    | if length == 1 and .[0].type == "bind" and .[0].read_only == true
+      then .[0].source else empty end
+  ' <<< "$config") || fail 'mounted host registry is invalid; policy retained'
+  secrets_source=$(jq -er '
+    [.services.inspector.volumes[] | select(.target == "/run/secrets/inspector-hosts")]
+    | if length == 1 and .[0].type == "bind" and .[0].read_only == true
+      then .[0].source else empty end
+  ' <<< "$config") || fail 'mounted host credentials are invalid; policy retained'
+  private_subnet=$(jq -er '.networks["mcp-private"].ipam.config[0].subnet' <<< "$config") ||
+    fail 'private network is invalid; policy retained'
+  egress_subnet=$(jq -er '.networks["ssh-egress"].ipam.config[0].subnet' <<< "$config") ||
+    fail 'egress network is invalid; policy retained'
+  if ! timeout 8s python3 "$root/scripts/multi_host_allowlist.py" \
+      "$registry_source" "$secrets_source" "$INSPECTOR_UNIT_PRIVATE_GATEWAY" \
+      "$private_subnet" "$egress_subnet" "${external_ips[@]}" >/dev/null 2>&1
+  then
+    fail 'mounted registry and external SSH allowlist are invalid or differ; policy retained'
+  fi
+}
+
 case ${1:-} in
   policy-start)
+    validate_contract
+    validate_allowlist
     bash "$root/scripts/multi_network_policy.sh" install "${policy[@]}"
     bash "$root/scripts/multi_network_policy.sh" verify "${policy[@]}"
     ;;
   check)
-    bash "$root/scripts/multi_network_policy.sh" verify "${policy[@]}"
     validate_contract
+    validate_allowlist
+    bash "$root/scripts/multi_network_policy.sh" verify "${policy[@]}"
     ;;
   start)
-    bash "$root/scripts/multi_network_policy.sh" verify "${policy[@]}"
     validate_contract
+    validate_allowlist
+    bash "$root/scripts/multi_network_policy.sh" verify "${policy[@]}"
     exec "${compose[@]}" up --no-deps --no-build --pull never --exit-code-from inspector inspector
     ;;
   cleanup)

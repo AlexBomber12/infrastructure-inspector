@@ -24,7 +24,7 @@ docker run --rm \
   --env COVERAGE_FILE=/tmp/.coverage \
   --entrypoint pytest \
   infrastructure-inspector-test:ci \
-  -q -p no:cacheprovider /opt/tests/test_inspector.py /opt/tests/test_protocol.py /opt/tests/test_release_preflight.py \
+  -q -p no:cacheprovider /opt/tests/test_inspector.py /opt/tests/test_protocol.py /opt/tests/test_release_preflight.py /opt/tests/test_multi_host_allowlist.py \
   --cov=/opt/ssh-inspector --cov=/opt/host --cov=/opt/scripts --cov-branch \
   --cov-report=term-missing --cov-fail-under=100
 echo 'Running protected secret mount integration'
