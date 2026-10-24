@@ -29,5 +29,7 @@ docker run --rm \
   --cov-report=term-missing --cov-fail-under=100
 echo 'Running protected secret mount integration'
 python3 tests/test_release_secret_mounts.py
+echo 'Running disposable systemd/Compose lifecycle integration'
+bash tests/test_multi_host_service.sh
 echo 'Running disposable release rollback integration'
 bash tests/test_release_rollback.sh

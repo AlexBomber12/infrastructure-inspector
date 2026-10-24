@@ -101,28 +101,65 @@ sudo bash scripts/multi_network_policy.sh install "$PRIVATE_IP" "$PRIVATE_MAC" "
 ```
 
 The install validates then atomically replaces only `inet inspector_multi`.
-It is idempotent. Before Inspector starts, and after any Docker or firewall
-restart, run `verify` with the same reviewed arguments as `install`. Verification
-compares the complete installed table, base chains, hooks and ordered rules;
-if it fails, keep Inspector stopped and reinstall the reviewed policy before
-rechecking packet behavior. Use an operator-owned systemd oneshot policy unit with
-`Before=docker.service` and a Docker drop-in with `Requires=` and `After=`
-pointing to that unit. Its `ExecStart` calls the same installer with the
-reviewed private arguments. Manage Inspector with a separate unit that has
-`Requires=`/`BindsTo=` on the policy unit, `After=docker.service`, starts only
-Inspector with the command below, and stops only Inspector in `ExecStop`.
-Keep Compose's multi-host `restart: "no"`. The policy must be loaded before
-Docker can start containers on boot; after a Docker restart, verify its
-contents and packet behavior before starting Inspector. Do not rely on a
-one-time `DOCKER-USER` rule. Stop Inspector before any firewall reload that
-could flush the table. If ordering, persistence, or this stop-before-flush
-behavior cannot be demonstrated on the actual host, **do not migrate**.
+For the systemd deployment, use the reviewed units in `deploy/systemd/` and
+`scripts/multi_host_service.sh`. The policy oneshot installs and verifies the
+reviewed table. The Inspector unit requires the policy, binds to Docker, and verifies
+the table again immediately before `docker compose up --no-deps --exit-code-from inspector
+inspector`, and has no automatic restart. It does **not** alter `docker.service`
+or its dependencies: unrelated containers, including Tunnel, remain free to
+start. The service's `ExecStop` and `ExecStopPost` call the same bounded cleanup.
+`ExecStopPost` runs even when policy verification or startup fails. Cleanup
+identifies a multi-host container by the exact Compose project, service,
+configuration hash, immutable image ID, source file, mode, restart policy,
+network attachments, addresses, and reserved MAC. A legacy single-host
+Inspector has no multi-host mode marker and is left running. An unexpected
+multi-host identity or Docker error makes cleanup fail visibly. It never stops
+Tunnel and never uses project-wide Compose stop/down or removal.
 
-Start only Inspector with the exact reviewed Compose file, project and env:
+The policy unit intentionally has no automatic removal action. Keep it installed
+after confirmed stop until an operator reviews removal. If Docker is unavailable
+or stopping/state verification fails, treat shutdown as unresolved and retain
+the table. A Docker daemon restart with `live-restore=false` stops Inspector;
+its Compose `restart: "no"` and the unit's `Restart=no` prevent an unattended
+restart. `BindsTo=docker.service` stops the unit when Docker is stopped by
+systemd and does not start Inspector when Docker later returns. The Tunnel's
+`unless-stopped` remains independent. After Docker returns, an operator must verify policy and packet behavior before restarting
+Inspector. An arbitrary nftables flush *while Inspector is already running* is
+a separate exposure mode. The synchronous start and stop ordering cannot
+prevent packets in that interval; no asynchronous monitor could guarantee zero
+exposure after such a flush. Stop Inspector before firewall maintenance and
+repeat verification before restart. If this operating constraint cannot be
+met, do not migrate.
 
-```sh
-docker compose --env-file "$NEW_ENV" -f compose.multi.yaml -p "$PROJECT" up -d --no-deps --no-build --pull never inspector
-```
+### Reviewed installation after separate approval
+
+The two production unit files currently staged outside Git are uninstalled.
+Do not replace or enable them as part of this PR. After approval, compare those
+files with `deploy/systemd/infrastructure-inspector-policy.service` and
+`deploy/systemd/infrastructure-inspector-multi.service`. Review and install a
+root-owned, mode 0600 `/etc/infrastructure-inspector/multi-host-unit.conf` from
+the example, replacing every example address and path with the private values.
+The host needs `bash`, `jq`, GNU `timeout`, Docker Compose v2, `nft`, and
+`systemd-analyze`. Use the exact absolute canonical path to the reviewed
+`compose.multi.yaml`, the private Compose env file, the existing Compose project, and every external
+IPv4 allow destination. Install the reviewed checkout at
+`/opt/infrastructure-inspector` or adjust both unit `Exec*` paths during
+review. Run `systemd-analyze verify` on the **proposed** units and compare the
+rendered policy against registry targets and host routes. Preserve copies of
+the staged files for rollback; replace them only after the operator approves
+the final unit and config diff. Then `systemctl daemon-reload`, enable the
+policy unit, and start it. Confirm `verify` and packet tests before stopping
+the old Inspector. Keep the fresh snapshot and run the full release preflight
+while that old Inspector is still running. Only after preflight passes, stop
+**only** the old Inspector, start `infrastructure-inspector-multi.service`,
+and verify its status, runtime identity, MCP diagnostics, and the unchanged
+Tunnel ID/config hash. Do not enable the multi-host unit at boot until the
+operator has reviewed and accepted the running candidate. A failed unit start
+must be investigated; its post-stop cleanup is not a successful migration.
+
+The unit's foreground Compose command starts only Inspector, with the exact
+reviewed Compose file, env file, project, immutable image, and `--no-deps`.
+Do not issue a separate detached `compose up` during the managed lifecycle.
 
 Verify the new Inspector's image ID, UID/GID, mounts, exact two network
 attachments, static addresses, IPv6-disabled networks, no published ports,
@@ -138,8 +175,10 @@ the repository's synthetic NAT test does not establish this production fact.
 
 ## Rollback
 
-Stop only the candidate Inspector. Verify the snapshot and restore only
-Inspector from the captured effective configuration and immutable old image:
+Stop the multi-host unit, run the cleanup helper again with the reviewed unit
+configuration, and confirm no multi-host Inspector is running. If Docker cannot
+confirm this, retain the nftables policy and do not claim rollback complete.
+Verify the snapshot and restore only Inspector from the captured effective configuration and immutable old image:
 
 ```sh
 bash scripts/release_snapshot.sh verify "$SNAPSHOT"
@@ -149,9 +188,9 @@ docker compose -f "$SNAPSHOT/effective.json" -f "$SNAPSHOT/rollback-image.yaml" 
 Confirm the old image, environment, private-only network attachment, working
 legacy diagnostic, and original Tunnel ID and hash. Remove only the newly
 created `${PROJECT}_ssh-egress` network after confirming no container uses it.
-Disable the new policy boot unit and remove only `inet inspector_multi` after
-the old Inspector is restored. Keep the snapshot and credentials protected for
-incident review. Never prune unrelated networks or images as part of rollback.
+Disable the new policy boot unit. Remove only `inet inspector_multi`
+after Docker confirms the candidate is stopped and the old Inspector is
+restored. Keep the snapshot and credentials protected for incident review. Never prune unrelated networks or images as part of rollback.
 
 ## Evidence and remaining production checks
 
@@ -162,7 +201,10 @@ attachment and creates its own network namespaces; it checks allowed and
 rejected packets, host-local processing, route changes, bridge recreation,
 IPv6, DNS sink packet rejection, synthetic masquerading, and policy removal.
 A separate Docker-backed test exercises embedded DNS with a synthetic peer:
-peer discovery succeeds and external resolution fails. These tests do not prove
+peer discovery succeeds and external resolution fails. The disposable lifecycle
+test validates the unit dependency graph with `systemd-analyze`, kills a
+foreground Compose process, and exercises the exact stop helper against Docker.
+It does not run a real systemd PID 1. These tests do not prove
 the real host's nft persistence, Docker daemon restart behavior, actual route
 table, Docker NAT source, or Tunnel continuity during migration. Those require
 an operator-controlled staging run and production preflight before rollout.
@@ -170,7 +212,7 @@ an operator-controlled staging run and production preflight before rollout.
 The policy depends on Inspector retaining its reserved private MAC and exactly
 the reviewed two attachments; verify both after recreation. The Docker networks
 also keep IPv6 disabled. A firewall flush while Inspector is running could
-expose it until the policy is restored. The
-controlled service lifecycle above must be demonstrated before treating the
-deployment as fail-closed. Do not claim complete isolation from repository
-tests alone.
+expose it until the policy is restored; the service lifecycle covers ordinary start/stop failures, not
+this arbitrary deletion. A real host staging run must prove systemd and Docker
+restart behavior before production activation. Do not claim complete
+isolation from repository tests alone.

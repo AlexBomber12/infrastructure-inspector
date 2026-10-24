@@ -1,0 +1,19 @@
+[Unit]
+Description=Multi-host Inspector foreground Compose lifecycle
+Requires=infrastructure-inspector-policy.service
+BindsTo=docker.service
+After=infrastructure-inspector-policy.service docker.service
+
+[Service]
+Type=exec
+EnvironmentFile=/etc/infrastructure-inspector/multi-host-unit.conf
+ExecStartPre=/usr/bin/bash /opt/infrastructure-inspector/scripts/multi_host_service.sh check
+ExecStart=/usr/bin/bash /opt/infrastructure-inspector/scripts/multi_host_service.sh start
+ExecStop=/usr/bin/bash /opt/infrastructure-inspector/scripts/multi_host_service.sh cleanup
+ExecStopPost=/usr/bin/bash /opt/infrastructure-inspector/scripts/multi_host_service.sh cleanup
+Restart=no
+TimeoutStartSec=30s
+TimeoutStopSec=45s
+
+[Install]
+WantedBy=multi-user.target
