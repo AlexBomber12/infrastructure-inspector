@@ -405,9 +405,29 @@ def validate_migration(config, compose_file, env_file, project, snapshot):
     require(actual_network["Internal"] is True and actual_network["EnableIPv6"] is False,
             "Running private network is not internal IPv4-only")
     desired_pool = config["networks"]["mcp-private"]["ipam"]["config"][0]
-    require(actual_network["IPAM"]["Config"] == [{
-        "Subnet": desired_pool["subnet"], "Gateway": desired_pool["gateway"]}],
-        "Running private network address pool differs from migration")
+    ipam = actual_network["IPAM"]
+    require(isinstance(ipam, dict) and set(ipam) <= {"Config", "Driver", "Options"}
+            and ipam.get("Driver", "default") == "default"
+            and ipam.get("Options") in (None, {}),
+            "Running private network IPAM settings differ from migration")
+    pools = ipam.get("Config")
+    require(isinstance(pools, list) and len(pools) == 1 and isinstance(pools[0], dict),
+            "Running private network address pool differs from migration")
+    pool = pools[0]
+    require(set(pool) in ({"Subnet", "Gateway"}, {"Subnet", "Gateway", "IPRange"})
+            and pool.get("IPRange", "") == ""
+            and isinstance(pool["Subnet"], str) and isinstance(pool["Gateway"], str),
+            "Running private network address pool differs from migration")
+    try:
+        subnet = ipaddress.ip_network(pool["Subnet"])
+        gateway = ipaddress.ip_address(pool["Gateway"])
+        desired_subnet = ipaddress.ip_network(desired_pool["subnet"])
+        desired_gateway = ipaddress.ip_address(desired_pool["gateway"])
+    except ValueError as exc:
+        raise ValueError("Invalid running private network address pool") from exc
+    require(subnet.version == gateway.version == desired_subnet.version == desired_gateway.version == 4
+            and gateway in subnet and subnet == desired_subnet and gateway == desired_gateway,
+            "Running private network address pool differs from migration")
 
 
 def validate_egress_route(config):
