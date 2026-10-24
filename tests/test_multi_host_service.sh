@@ -126,6 +126,14 @@ case "$1" in
 esac
 SH
 chmod +x "$tmp/bin/nft"
+# The real installer requires br_netfilter even when nft is disposable. Some
+# unprivileged CI runners cannot load it; negative authorization paths still
+# run there, while hosts with the prerequisite also exercise installation.
+policy_prerequisite=false
+if [[ -r /proc/sys/net/bridge/bridge-nf-call-iptables ]] &&
+   [[ $(cat /proc/sys/net/bridge/bridge-nf-call-iptables) == 1 ]]; then
+  policy_prerequisite=true
+fi
 # Supply the actual bridge through the environment to avoid a second policy
 # definition in this disposable test.
 write_expected_policy() {
@@ -161,10 +169,12 @@ reject_all_actions() {
   done
 }
 write_expected_policy 192.0.2.10
-: > "$NFT_CALL_LOG"
-PATH="$tmp/bin:$PATH" bash scripts/multi_host_service.sh policy-start
-rg -q '^-f ' "$NFT_CALL_LOG"
-PATH="$tmp/bin:$PATH" bash scripts/multi_host_service.sh check
+if [[ $policy_prerequisite == true ]]; then
+  : > "$NFT_CALL_LOG"
+  PATH="$tmp/bin:$PATH" bash scripts/multi_host_service.sh policy-start
+  rg -q '^-f ' "$NFT_CALL_LOG"
+  PATH="$tmp/bin:$PATH" bash scripts/multi_host_service.sh check
+fi
 # The effective bind mount, not an unrelated unit path, is authoritative.
 cp "$registry" "$tmp/alternate-registry.json"
 python3 - "$tmp/alternate-registry.json" <<'PY'
@@ -182,8 +192,10 @@ sed "s|^INSPECTOR_HOST_REGISTRY_PATH=.*|INSPECTOR_HOST_REGISTRY_PATH=$tmp/altern
   "$tmp/original.env" > "$tmp/fixture.env"
 reject_all_actions mounted_registry_differs '192.0.2.10'
 write_expected_policy 192.0.2.11
-INSPECTOR_UNIT_EXTERNAL_IPS=192.0.2.11 PATH="$tmp/bin:$PATH" \
-  bash scripts/multi_host_service.sh policy-start
+if [[ $policy_prerequisite == true ]]; then
+  INSPECTOR_UNIT_EXTERNAL_IPS=192.0.2.11 PATH="$tmp/bin:$PATH" \
+    bash scripts/multi_host_service.sh policy-start
+fi
 cp "$tmp/original.env" "$tmp/fixture.env"
 write_expected_policy 192.0.2.10
 reject_all_actions extra '192.0.2.10 192.0.2.11'
@@ -206,10 +218,12 @@ write_registry 192.0.2.10 192.0.2.10
 reject_all_actions duplicate_registry_destinations '192.0.2.10'
 write_registry 192.0.2.10 192.0.2.11
 write_expected_policy 192.0.2.11 192.0.2.10
-INSPECTOR_UNIT_EXTERNAL_IPS='192.0.2.11 192.0.2.10' PATH="$tmp/bin:$PATH" \
-  bash scripts/multi_host_service.sh policy-start
-INSPECTOR_UNIT_EXTERNAL_IPS='192.0.2.11 192.0.2.10' PATH="$tmp/bin:$PATH" \
-  bash scripts/multi_host_service.sh check
+if [[ $policy_prerequisite == true ]]; then
+  INSPECTOR_UNIT_EXTERNAL_IPS='192.0.2.11 192.0.2.10' PATH="$tmp/bin:$PATH" \
+    bash scripts/multi_host_service.sh policy-start
+  INSPECTOR_UNIT_EXTERNAL_IPS='192.0.2.11 192.0.2.10' PATH="$tmp/bin:$PATH" \
+    bash scripts/multi_host_service.sh check
+fi
 write_registry 192.0.2.10
 write_expected_policy 192.0.2.10
 mv "$registry" "$tmp/registry.saved"
@@ -243,7 +257,12 @@ docker rm -f "$project-legacy" >/dev/null
 
 # A killed foreground Compose client leaves its container running. Simulate
 # systemd's post-stop action with the same ExecStopPost helper.
-PATH="$tmp/bin:$PATH" bash scripts/multi_host_service.sh start >"$tmp/up.log" 2>&1 &
+if [[ $policy_prerequisite == true ]]; then
+  PATH="$tmp/bin:$PATH" bash scripts/multi_host_service.sh start >"$tmp/up.log" 2>&1 &
+else
+  docker compose --env-file "$tmp/fixture.env" -f "$tmp/compose.multi.yaml" -p "$project" \
+    up --no-deps --no-build --pull never --exit-code-from inspector inspector >"$tmp/up.log" 2>&1 &
+fi
 compose_pid=$!
 for _ in $(seq 1 40); do
   candidate=$(docker compose --env-file "$tmp/fixture.env" -f "$tmp/compose.multi.yaml" -p "$project" ps -q inspector)
