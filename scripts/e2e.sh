@@ -7,6 +7,8 @@ docker build -f tests/Dockerfile -t infrastructure-inspector-test:ci .
 fixture="$(mktemp -d)"
 chmod 755 "$fixture"
 project="inspector-e2e-$$"
+printf 'discrete\n' > "$fixture/gpu-mode"
+chmod 666 "$fixture/gpu-mode"
 compose_file="$fixture/compose.yaml"
 cleanup() {
   result=$?
@@ -74,6 +76,7 @@ services:
     read_only: true
     volumes:
       - $fixture:/run/fixture:ro
+      - $repo_root/tests/fixtures/nvidia-smi:/usr/bin/nvidia-smi:ro
     tmpfs:
       - /run/sshd
     networks: [isolated]
@@ -110,6 +113,7 @@ services:
     volumes:
       - $repo_root/tests:/opt/tests:ro
       - $fixture:/run/fixture:ro
+      - $fixture/gpu-mode:/run/fixture/gpu-mode:rw
     tmpfs:
       - /tmp
     networks: [isolated]

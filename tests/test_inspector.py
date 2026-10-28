@@ -23,6 +23,14 @@ dispatcher = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(dispatcher)
 
 EXPECTED_COMMANDS = {
+    "gpu.nvidia.status": [
+        "/usr/bin/nvidia-smi",
+        "--query-gpu=index,name,driver_version,pstate,temperature.gpu,utilization.gpu,memory.total,memory.used,power.draw",
+        "--format=csv",
+    ],
+    "gpu.nvidia.compute_processes": [
+        "/usr/bin/nvidia-smi", "--query-compute-apps=pid,used_gpu_memory", "--format=csv",
+    ],
     "system.identity": ["/usr/bin/id"],
     "system.uptime": ["/usr/bin/uptime"],
     "network.listeners": ["/usr/bin/ss", "-H", "-lnt"],
@@ -228,6 +236,28 @@ class HostRegistryTests(unittest.TestCase):
 
 
 class InspectorTests(unittest.TestCase):
+    def test_mcp_valid_diagnostic_and_discovery_arguments(self):
+        with patch.object(server, "SSH_TARGET", "audit@fixture"), patch.object(
+            server, "run_bounded", return_value=Captured(0, b"ok", b"", False),
+        ) as run:
+            for name, arguments in (
+                ("list_checks", {}),
+                ("inspect", {"check_id": "gpu.nvidia.status"}),
+                ("inspect_batch", {"check_ids": ["gpu.nvidia.compute_processes"]}),
+            ):
+                self.assertFalse(asyncio.run(server.mcp.call_tool(name, arguments)).is_error)
+            self.assertEqual(run.call_count, 2)
+
+    def test_mcp_rejects_extra_diagnostic_arguments_before_ssh(self):
+        with patch.object(server, "run_bounded") as run:
+            for name, arguments in (
+                ("inspect", {"check_id": "gpu.nvidia.status", "args": ["--gpu-reset"]}),
+                ("inspect_batch", {"check_ids": ["gpu.nvidia.compute_processes"], "executable": "/bin/sh"}),
+            ):
+                with self.assertRaisesRegex(server.ToolError, "Unexpected diagnostic arguments"):
+                    asyncio.run(server.mcp.call_tool(name, arguments))
+            run.assert_not_called()
+
     def test_registered_tools(self):
         tools = asyncio.run(server.mcp.list_tools())
         self.assertEqual(
@@ -237,7 +267,7 @@ class InspectorTests(unittest.TestCase):
 
     def test_catalog_complete_and_consistent(self):
         self.assertEqual(set(CHECKS), set(EXPECTED_COMMANDS))
-        self.assertEqual(len(CHECKS), 15)
+        self.assertEqual(len(CHECKS), 17)
         self.assertEqual(set(LEGACY_OPERATIONS.values()), {
             "system.identity", "system.uptime", "network.listeners", "system.services",
         })
@@ -276,6 +306,30 @@ class InspectorTests(unittest.TestCase):
                     self.assertIs(result["stderr_truncated"], False)
                     self.assertIsNone(result["error"])
                     self.assertTrue(result["collected_at"].endswith("+00:00"))
+
+    def test_nvidia_raw_output_and_failures(self):
+        cases = (
+            (Captured(0, b"index, memory.total, memory.used\n0, [N/A], N/A\n", b"", False), "success"),
+            (Captured(0, b"pid, used_gpu_memory [MiB]\n", b"", False), "success"),
+            (Captured(0, b"pid, used_gpu_memory [MiB]\n1234, 512 MiB\n", b"", False), "success"),
+            (Captured(127, b"", b"ERROR: diagnostic could not start\n", False), "error"),
+            (Captured(13, b"", b"Insufficient Permissions\n", False), "error"),
+            (Captured(9, b"", b"Driver failure\n", False), "error"),
+            (Captured(124, b"", b"ERROR: timeout\n", False), "error"),
+            (Captured(125, b"x" * 16384, b"ERROR: diagnostic output truncated\n", False), "incomplete"),
+        )
+        with patch.object(server, "SSH_TARGET", "audit@fixture"):
+            for check_id in ("gpu.nvidia.status", "gpu.nvidia.compute_processes"):
+                self.assertEqual(CHECKS[check_id].category, "gpu")
+                for captured, status in cases:
+                    with self.subTest(check_id=check_id, status=status, code=captured.returncode), patch.object(
+                        server, "run_bounded", return_value=captured,
+                    ):
+                        result = server.inspect(check_id)
+                        self.assertEqual(result["status"], status)
+                        self.assertEqual(result["exit_code"], captured.returncode)
+                        self.assertEqual(result["output"], captured.stdout.decode())
+                        self.assertEqual(result["truncated"], status == "incomplete")
 
     def test_unknown_malformed_and_injected_requests_do_not_reach_ssh(self):
         with patch.object(server, "run_bounded") as run:

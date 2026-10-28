@@ -47,6 +47,8 @@ Supported operations:
 | — | network.interfaces | /usr/sbin/ip -j address show |
 | — | network.routes_ipv4 | /usr/sbin/ip -j -4 route show |
 | — | network.routes_ipv6 | /usr/sbin/ip -j -6 route show |
+| — | gpu.nvidia.status | /usr/bin/nvidia-smi --query-gpu=index,name,driver_version,pstate,temperature.gpu,utilization.gpu,memory.total,memory.used,power.draw --format=csv |
+| — | gpu.nvidia.compute_processes | /usr/bin/nvidia-smi --query-compute-apps=pid,used_gpu_memory --format=csv |
 
 All checks are read-only and unprivileged. No check accepts parameters. The
 legacy MCP tools and SSH operation strings remain available.
@@ -77,6 +79,34 @@ indicates separately that some error or warning text was dropped. Output is
 limited to 16,384 bytes and error information to 1,024
 characters; each SSH request has a 15-second deadline. A batch retains
 individual results when another check fails and can take up to 75 seconds.
+
+The two NVIDIA checks use category `gpu` and require a working
+`/usr/bin/nvidia-smi` accessible to the unprivileged audit account on the target.
+They return raw CSV with its headers and units. Status fields report GPU index,
+name, driver version, performance state, temperature, utilization, total and
+used GPU memory, and power draw. Unsupported measurements such as `[N/A]` or
+`N/A` remain unchanged and are successful when the command succeeds. They are
+never converted to zero. DGX Spark uses shared system memory; `system.memory`
+reports OS-level memory, not memory allocated exclusively to the GPU.
+
+The compute query returns process IDs and used GPU memory. Header-only output
+is a valid successful empty result. This query covers compute processes, not
+every graphics process. These fields contain no GPU identifier and cannot
+establish per-GPU attribution on multi-GPU systems.
+
+The existing limits apply: the dispatcher allows 10 seconds, 16,384 stdout
+bytes and 1,024 stderr bytes; Inspector allows 15 seconds per SSH request and
+the output/error limits described above. Missing executables, permission or
+driver failures, nonzero exits and timeouts remain errors; truncated stdout
+remains incomplete. A failed GPU check does not discard other batch results.
+
+Deployment requires separately reviewed Inspector and dispatcher updates on
+each intended target. A catalog update alone does not authorize target-side
+commands. NVIDIA runs only on the inspected host; Inspector needs no NVIDIA
+packages, GPU access, device mounts or Docker socket. Disposable synthetic tests
+verify the protocol behavior, not physical GPU compatibility, restricted audit
+account access on real GPU hosts, or production rollout. No production
+onboarding or deployment is part of this change.
 
 Arbitrary shell execution, file modification, package installation, service management and reboots are not supported.
 

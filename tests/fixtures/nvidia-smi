@@ -1,0 +1,35 @@
+#!/usr/local/bin/python3
+"""Synthetic executable mounted only into the disposable SSH target."""
+from pathlib import Path
+import sys
+import time
+
+STATUS = '--query-gpu=index,name,driver_version,pstate,temperature.gpu,utilization.gpu,memory.total,memory.used,power.draw'
+PROCESSES = '--query-compute-apps=pid,used_gpu_memory'
+assert sys.argv[1:] in ([STATUS, '--format=csv'], [PROCESSES, '--format=csv'])
+mode = Path('/run/fixture/gpu-mode').read_text().strip()
+if mode == 'driver_failure':
+    sys.stderr.write('NVIDIA driver communication failed\n')
+    sys.exit(9)
+if mode == 'permission':
+    sys.stderr.write('Insufficient Permissions\n')
+    sys.exit(13)
+if mode == 'timeout':
+    time.sleep(60)
+if mode == 'overflow':
+    sys.stdout.write('x' * 20000)
+    sys.exit(0)
+if mode == 'stderr_overflow':
+    sys.stderr.write('e' * 2000)
+    sys.exit(7)
+if sys.argv[1] == STATUS:
+    print('index, name, driver_version, pstate, temperature.gpu, utilization.gpu [%], memory.total [MiB], memory.used [MiB], power.draw [W]')
+    if mode == 'spark':
+        print('0, NVIDIA GB10, 580.00, P0, 42, 0 %, [N/A], N/A, 12.50 W')
+    else:
+        print('0, NVIDIA GeForce RTX 3090, 580.00, P8, 35, 1 %, 24576 MiB, 512 MiB, 25.00 W')
+else:
+    print('pid, used_gpu_memory [MiB]')
+    if mode == 'populated':
+        print('1234, 512 MiB')
+        print('5678, [N/A]')

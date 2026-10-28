@@ -73,7 +73,7 @@ async def _exercise(url, log):
             status = payload(await session.call_tool("inspector_status"))
             assert "identity" in status["operations"]
             checks = payload(await session.call_tool("list_checks"))
-            assert len(checks) == 15
+            assert len(checks) == 17
             assert {item["check_id"] for item in checks} == set(CHECKS)
             assert all(item["requires_elevation"] is False for item in checks)
             single = payload(await session.call_tool("inspect", {"check_id": "system.os"}))
@@ -84,7 +84,7 @@ async def _exercise(url, log):
             for check_id in (
                 "system.block_devices", "system.filesystems", "system.mounts",
                 "system.processes", "network.interfaces", "network.routes_ipv4",
-                "network.routes_ipv6",
+                "network.routes_ipv6", "gpu.nvidia.status", "gpu.nvidia.compute_processes",
             ):
                 result = payload(await session.call_tool("inspect", {"check_id": check_id}))
                 assert result["check_id"] == check_id
@@ -107,6 +107,11 @@ async def _exercise(url, log):
             for name, args in (
                 ("inspect", {"check_id": "system.os; id"}),
                 ("inspect", {"check_id": 42}),
+                ("inspect", {"check_id": "gpu.nvidia.status --id=0"}),
+                ("inspect", {"check_id": "gpu.nvidia.status; id"}),
+                ("inspect", {"check_id": "gpu.nvidia.reset"}),
+                ("inspect", {"check_id": "gpu.nvidia.status", "args": ["--gpu-reset"]}),
+                ("inspect_batch", {"check_ids": ["gpu.nvidia.status"], "flags": "--gpu-reset"}),
                 ("inspect", {"check_id": "system.processes --forest"}),
                 ("inspect", {"check_id": "network.routes_ipv6; id"}),
                 ("inspect_batch", {"check_ids": ["system.os", "bad"]}),

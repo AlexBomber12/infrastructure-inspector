@@ -9,6 +9,14 @@ import time
 # This is the target host's independent authorization boundary. Do not import
 # the MCP catalog or accept arguments from SSH_ORIGINAL_COMMAND.
 COMMANDS = {
+    "gpu.nvidia.status": [
+        "/usr/bin/nvidia-smi",
+        "--query-gpu=index,name,driver_version,pstate,temperature.gpu,utilization.gpu,memory.total,memory.used,power.draw",
+        "--format=csv",
+    ],
+    "gpu.nvidia.compute_processes": [
+        "/usr/bin/nvidia-smi", "--query-compute-apps=pid,used_gpu_memory", "--format=csv",
+    ],
     "system.identity": ["/usr/bin/id"],
     "system.uptime": ["/usr/bin/uptime"],
     "network.listeners": ["/usr/bin/ss", "-H", "-lnt"],
