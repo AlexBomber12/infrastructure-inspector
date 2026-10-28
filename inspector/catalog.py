@@ -13,6 +13,8 @@ class Check:
 
 
 CHECKS = {
+    "gpu.nvidia.status": Check("NVIDIA GPU metrics as raw CSV", "gpu"),
+    "gpu.nvidia.compute_processes": Check("NVIDIA compute process IDs and GPU memory as raw CSV", "gpu"),
     "system.identity": Check("Current SSH account identity", "system"),
     "system.uptime": Check("Host uptime and load", "system"),
     "network.listeners": Check("Listening TCP sockets", "network"),

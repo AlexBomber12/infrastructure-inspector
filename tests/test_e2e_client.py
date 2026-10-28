@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 from datetime import datetime
+from pathlib import Path
 
 import pytest
 from mcp import ClientSession
@@ -19,6 +20,7 @@ INVENTORY_CHECKS = (
     "system.processes", "network.interfaces", "network.routes_ipv4",
     "network.routes_ipv6",
 )
+GPU_CHECKS = ("gpu.nvidia.status", "gpu.nvidia.compute_processes")
 SSH = [
     "/usr/bin/ssh", "-F", "/dev/null", "-T", "-o", "BatchMode=yes",
     "-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=5",
@@ -96,8 +98,8 @@ def assert_result_schema(result, check_id):
 
 def test_catalog_discovery_and_original_checks():
     checks = payload(asyncio.run(call("list_checks")))
-    assert {item["check_id"] for item in checks} == set(ORIGINAL_CHECKS + INVENTORY_CHECKS)
-    assert len(checks) == 15
+    assert {item["check_id"] for item in checks} == set(ORIGINAL_CHECKS + INVENTORY_CHECKS + GPU_CHECKS)
+    assert len(checks) == 17
     assert all(item["requires_elevation"] is False for item in checks)
     for check_id in ORIGINAL_CHECKS:
         result = payload(asyncio.run(call("inspect", {"check_id": check_id})))
@@ -212,6 +214,9 @@ def test_shell_injection_rejected():
     "system.block_devices --output SERIAL", "system.filesystems /etc/shadow",
     "system.mounts; id", "system.processes --forest",
     "network.interfaces; id", "network.routes_ipv4 -j", "network.routes_ipv6 && id",
+    "gpu.nvidia.status --id=0", "gpu.nvidia.compute_processes; id",
+    "gpu.nvidia.reset", "/usr/bin/nvidia-smi --gpu-reset",
+    "/usr/bin/nvidia-smi -pm 1", "gpu.nvidia.status --power-limit=100",
 ))
 def test_inventory_arguments_rejected_by_force_command(command):
     result = ssh(command)
@@ -231,3 +236,70 @@ def test_unavailable_ssh_server():
     other = payload(asyncio.run(call("inspect", {"check_id": "system.identity", "host_id": "b"})))
     assert other["host_id"] == "b"
     assert other["status"] == "success"
+
+
+@pytest.mark.parametrize("check_id", GPU_CHECKS)
+@pytest.mark.parametrize("mode", (
+    "discrete", "spark", "populated", "driver_failure", "permission",
+    "timeout", "overflow", "stderr_overflow",
+))
+def test_nvidia_through_mcp_ssh_dispatcher(check_id, mode):
+    Path("/run/fixture/gpu-mode").write_text(mode)
+    result = payload(asyncio.run(call("inspect", {"check_id": check_id})))
+    assert_result_schema(result, check_id)
+    if mode in {"driver_failure", "permission", "timeout", "stderr_overflow"}:
+        code, message = {
+            "driver_failure": (9, "NVIDIA driver communication failed"),
+            "permission": (13, "Insufficient Permissions"),
+            "timeout": (124, "ERROR: timeout"),
+            "stderr_overflow": (7, "ERROR: diagnostic stderr truncated"),
+        }[mode]
+        assert result["status"] == "error"
+        assert result["exit_code"] == code
+        assert message in result["error"]
+        assert result["stderr_truncated"] == (mode == "stderr_overflow")
+    elif mode == "overflow":
+        assert result["status"] == "incomplete"
+        assert result["truncated"] is True
+        assert result["output"] == "x" * 16384
+        assert "truncated" in result["error"]
+    else:
+        assert result["status"] == "success"
+        assert result["exit_code"] == 0
+        assert result["error"] is None
+        assert result["truncated"] is False
+        if check_id == "gpu.nvidia.status":
+            header = ("index, name, driver_version, pstate, temperature.gpu, "
+                      "utilization.gpu [%], memory.total [MiB], memory.used [MiB], power.draw [W]\n")
+            row = ("0, NVIDIA GB10, 580.00, P0, 42, 0 %, [N/A], N/A, 12.50 W\n"
+                   if mode == "spark" else
+                   "0, NVIDIA GeForce RTX 3090, 580.00, P8, 35, 1 %, 24576 MiB, 512 MiB, 25.00 W\n")
+            assert result["output"] == header + row
+        else:
+            expected = "pid, used_gpu_memory [MiB]\n"
+            if mode == "populated":
+                expected += "1234, 512 MiB\n5678, [N/A]\n"
+            assert result["output"] == expected
+
+
+@pytest.mark.parametrize("check_id", GPU_CHECKS)
+def test_missing_nvidia_and_mixed_batch(check_id):
+    # The second disposable host has no synthetic executable or NVIDIA packages.
+    result = payload(asyncio.run(call("inspect_batch", {
+        "check_ids": [check_id, "system.identity"], "host_id": "b"})))
+    assert result[0]["status"] == "error"
+    assert result[0]["exit_code"] == 127
+    assert "could not start" in result[0]["error"]
+    assert result[1]["status"] == "success"
+    assert "uid=" in result[1]["output"]
+    assert all(item["host_id"] == "b" for item in result)
+
+
+def test_nvidia_mcp_rejects_extra_arguments():
+    for args in (
+        {"check_id": "gpu.nvidia.status", "args": ["--gpu-reset"]},
+        {"check_id": "gpu.nvidia.status --id=0"},
+        {"check_id": "gpu.nvidia.compute_processes; id"},
+        {"check_id": "gpu.nvidia.reset"},
+    ):
+        assert asyncio.run(call("inspect", args)).is_error

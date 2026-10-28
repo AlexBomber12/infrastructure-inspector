@@ -7,12 +7,26 @@ from typing import Literal
 
 from mcp.server import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
+from mcp.server.mcpserver.exceptions import ToolError
 
 from bounded import run_bounded
 from catalog import CHECKS, LEGACY_OPERATIONS
 from hosts import configured_registry, legacy_registry
 
-mcp = MCPServer("ssh-inspector-dev", version="0.3.0")
+class InspectorMCPServer(MCPServer):
+    async def call_tool(self, name, arguments, context=None):
+        # The SDK otherwise silently drops extra JSON properties. Reject them
+        # on diagnostic calls before argument coercion or SSH execution.
+        allowed = {
+            "inspect": {"check_id", "host_id"},
+            "inspect_batch": {"check_ids", "host_id"},
+        }
+        if name in allowed and set(arguments) - allowed[name]:
+            raise ToolError("Unexpected diagnostic arguments")
+        return await super().call_tool(name, arguments, context)
+
+
+mcp = InspectorMCPServer("ssh-inspector-dev", version="0.3.0")
 
 SSH_KEY = "/run/secrets/sg-audit-ed25519"
 SSH_HOST_KEYS = "/run/secrets/ssh-known-hosts"
